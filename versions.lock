@@ -1,0 +1,9 @@
+# Explicitly reviewed version inputs. Change these only through the upgrade procedure.
+KIT_VERSION=2.0.0
+BASE_IMAGE=mcr.microsoft.com/devcontainers/typescript-node:1-22-bookworm@sha256:7c2e711a4f7b02f32d2da16192d5e05aa7c95279be4ce889cff5df316f251c1d
+CODEX_VERSION=0.148.0
+CODEX_PACKAGE_INTEGRITY=sha512-bh5kH9+BMrFaHGmLeoSansPdfRksvr4UXzjQInns/KRO7r8VJ+6AAW+SqUsE8XcG3+OW/mI4EEy8Gpo9UDXGvQ==
+CODEX_LINUX_X64_INTEGRITY=sha512-uDT9s7AfMr9xLuJX3ZLVWHgHkUpCnZ33CZjZEdVQhrYCIErkDHsCW5TG290nNjaKngK0WxGt5uCcxeUHv9MWWA==
+NETWORK_IMAGE=local/codex-sandbox-networked:2.0.0
+OFFLINE_IMAGE=local/codex-sandbox-offline:2.0.0
+

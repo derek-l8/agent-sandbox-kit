@@ -1,0 +1,639 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+KIT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+WORKSPACES_ROOT="${CODEX_SANDBOX_WORKSPACES_ROOT:-${HOME}/agent-workspaces}"
+VERSIONS_FILE="${KIT_ROOT}/versions.lock"
+
+die() {
+  printf 'ERROR: %s\n' "$*" >&2
+  exit 1
+}
+
+note() {
+  printf '%s\n' "$*"
+}
+
+require_command() {
+  command -v "$1" >/dev/null 2>&1 || die "required command is missing: $1"
+}
+
+validate_slug() {
+  [[ "$1" =~ ^[a-z0-9][a-z0-9-]{0,62}$ ]] \
+    || die "slug must be lowercase letters, numbers, and hyphens (maximum 63 characters)"
+}
+
+read_versions() {
+  [[ -f "$VERSIONS_FILE" ]] || die "missing versions lock: $VERSIONS_FILE"
+  while IFS='=' read -r key value; do
+    [[ -z "$key" || "$key" == \#* ]] && continue
+    case "$key" in
+      KIT_VERSION|BASE_IMAGE|CODEX_VERSION|CODEX_PACKAGE_INTEGRITY|CODEX_LINUX_X64_INTEGRITY|NETWORK_IMAGE|OFFLINE_IMAGE)
+        printf -v "$key" '%s' "$value"
+        ;;
+      *) die "unknown key in versions.lock: $key" ;;
+    esac
+  done < "$VERSIONS_FILE"
+  : "${KIT_VERSION:?}" "${BASE_IMAGE:?}" "${CODEX_VERSION:?}" \
+    "${NETWORK_IMAGE:?}" "${OFFLINE_IMAGE:?}"
+}
+
+project_root() {
+  printf '%s/%s' "$WORKSPACES_ROOT" "$1"
+}
+
+load_project() {
+  local requested_slug="$1"
+  validate_slug "$requested_slug"
+  PROJECT_ROOT="$(project_root "$requested_slug")"
+  PROJECT_CONFIG="${PROJECT_ROOT}/control/project.env"
+  [[ -f "$PROJECT_CONFIG" ]] || die "project is not registered: $requested_slug"
+
+  PROJECT_SLUG=''
+  PROJECT_CPUS='6'
+  PROJECT_MEMORY='8g'
+  PROJECT_NETWORK_IMAGE="$NETWORK_IMAGE"
+  PROJECT_OFFLINE_IMAGE="$OFFLINE_IMAGE"
+
+  while IFS='=' read -r key value; do
+    [[ -z "$key" || "$key" == \#* ]] && continue
+    case "$key" in
+      PROJECT_SLUG|PROJECT_CPUS|PROJECT_MEMORY|PROJECT_NETWORK_IMAGE|PROJECT_OFFLINE_IMAGE)
+        printf -v "$key" '%s' "$value"
+        ;;
+      *) die "unknown key in $PROJECT_CONFIG: $key" ;;
+    esac
+  done < "$PROJECT_CONFIG"
+
+  [[ "$PROJECT_SLUG" == "$requested_slug" ]] || die "project slug does not match directory"
+  [[ "$PROJECT_CPUS" =~ ^[1-9][0-9]*$ ]] || die "PROJECT_CPUS must be a positive integer"
+  [[ "$PROJECT_MEMORY" =~ ^[1-9][0-9]*[mg]$ ]] || die "PROJECT_MEMORY must look like 8g or 4096m"
+
+  REPO_DIR="${PROJECT_ROOT}/repo"
+  INBOX_DIR="${PROJECT_ROOT}/inbox"
+  OUTBOX_DIR="${PROJECT_ROOT}/outbox"
+  SCRATCH_DIR="${PROJECT_ROOT}/scratch"
+  CONTROL_DIR="${PROJECT_ROOT}/control"
+  LOG_DIR="${CONTROL_DIR}/logs"
+  PROTECTED_PATHS_FILE="${CONTROL_DIR}/protected-paths.txt"
+}
+
+ensure_project_layout() {
+  local path
+  for path in "$REPO_DIR" "$INBOX_DIR" "$OUTBOX_DIR" "$SCRATCH_DIR" "$CONTROL_DIR" "$LOG_DIR"; do
+    [[ -d "$path" ]] || die "required directory is missing: $path"
+    [[ ! -L "$path" ]] || die "project boundary directory may not be a symbolic link: $path"
+  done
+  [[ -d "$REPO_DIR/.git" ]] || die "repo must contain a normal .git directory: $REPO_DIR"
+  local resolved_root resolved_path
+  resolved_root="$(realpath -e "$PROJECT_ROOT")"
+  for path in "$REPO_DIR" "$INBOX_DIR" "$OUTBOX_DIR" "$SCRATCH_DIR" "$CONTROL_DIR" "$LOG_DIR"; do
+    resolved_path="$(realpath -e "$path")"
+    case "$resolved_path" in
+      "$resolved_root"/*) ;;
+      *) die "project boundary directory escapes its project root: $path" ;;
+    esac
+  done
+}
+
+ensure_images() {
+  docker image inspect "$PROJECT_NETWORK_IMAGE" >/dev/null 2>&1 \
+    || die "network image is missing; run sandboxctl build"
+  docker image inspect "$PROJECT_OFFLINE_IMAGE" >/dev/null 2>&1 \
+    || die "offline image is missing; run sandboxctl build"
+
+  local network_kit offline_kit network_mode offline_mode network_codex
+  local network_base network_package_integrity network_binary_integrity
+  network_kit="$(docker image inspect --format '{{index .Config.Labels "io.codex-sandbox.kit.version"}}' "$PROJECT_NETWORK_IMAGE")"
+  offline_kit="$(docker image inspect --format '{{index .Config.Labels "io.codex-sandbox.kit.version"}}' "$PROJECT_OFFLINE_IMAGE")"
+  network_mode="$(docker image inspect --format '{{index .Config.Labels "io.codex-sandbox.mode"}}' "$PROJECT_NETWORK_IMAGE")"
+  offline_mode="$(docker image inspect --format '{{index .Config.Labels "io.codex-sandbox.mode"}}' "$PROJECT_OFFLINE_IMAGE")"
+  network_codex="$(docker image inspect --format '{{index .Config.Labels "io.codex-sandbox.codex.version"}}' "$PROJECT_NETWORK_IMAGE")"
+  network_base="$(docker image inspect --format '{{index .Config.Labels "io.codex-sandbox.base.image"}}' "$PROJECT_NETWORK_IMAGE")"
+  network_package_integrity="$(docker image inspect --format '{{index .Config.Labels "io.codex-sandbox.codex.package-integrity"}}' "$PROJECT_NETWORK_IMAGE")"
+  network_binary_integrity="$(docker image inspect --format '{{index .Config.Labels "io.codex-sandbox.codex.linux-x64-integrity"}}' "$PROJECT_NETWORK_IMAGE")"
+
+  [[ "$network_kit" == "$KIT_VERSION" && "$offline_kit" == "$KIT_VERSION" ]] \
+    || die "image kit version does not match versions.lock"
+  [[ "$network_mode" == 'networked-public' && "$offline_mode" == 'offline-private-test' ]] \
+    || die "image mode labels are invalid"
+  [[ "$network_codex" == "$CODEX_VERSION" ]] || die "network image Codex version is invalid"
+  [[ "$network_base" == "$BASE_IMAGE" ]] || die "network image base digest does not match versions.lock"
+  [[ "$network_package_integrity" == "$CODEX_PACKAGE_INTEGRITY" ]] \
+    || die "network image Codex package integrity label is invalid"
+  [[ "$network_binary_integrity" == "$CODEX_LINUX_X64_INTEGRITY" ]] \
+    || die "network image Codex binary integrity label is invalid"
+}
+
+auth_volume_name() {
+  printf 'codex-sbx-%s-auth-v2' "$PROJECT_SLUG"
+}
+
+ensure_auth_volume() {
+  local volume
+  volume="$(auth_volume_name)"
+  if ! docker volume inspect "$volume" >/dev/null 2>&1; then
+    docker volume create \
+      --label io.codex-sandbox.managed=true \
+      --label "io.codex-sandbox.project=${PROJECT_SLUG}" \
+      --label "io.codex-sandbox.kit.version=${KIT_VERSION}" \
+      "$volume" >/dev/null
+  else
+    local managed project kit
+    managed="$(docker volume inspect --format '{{index .Labels "io.codex-sandbox.managed"}}' "$volume")"
+    project="$(docker volume inspect --format '{{index .Labels "io.codex-sandbox.project"}}' "$volume")"
+    kit="$(docker volume inspect --format '{{index .Labels "io.codex-sandbox.kit.version"}}' "$volume")"
+    [[ "$managed" == 'true' && "$project" == "$PROJECT_SLUG" && "$kit" == "$KIT_VERSION" ]] \
+      || die "existing auth volume labels do not match this project and kit"
+  fi
+}
+
+protected_mount_args=()
+protected_expected=()
+load_protected_mounts() {
+  protected_mount_args=()
+  protected_expected=()
+  [[ -f "$PROTECTED_PATHS_FILE" ]] || return 0
+  local relative source target resolved
+  while IFS= read -r relative || [[ -n "$relative" ]]; do
+    [[ -z "$relative" || "$relative" == \#* ]] && continue
+    [[ "$relative" != /* && "$relative" != *','* ]] || die "invalid protected path: $relative"
+    source="${REPO_DIR}/${relative}"
+    [[ -e "$source" ]] || die "protected path does not exist: $relative"
+    resolved="$(realpath -e "$source")"
+    case "$resolved" in
+      "$REPO_DIR"/*) ;;
+      *) die "protected path escapes the repository: $relative" ;;
+    esac
+    target="/workspace/${relative}"
+    protected_mount_args+=(--mount "type=bind,source=${resolved},target=${target},readonly")
+    protected_expected+=("${target}|bind|false")
+  done < "$PROTECTED_PATHS_FILE"
+}
+
+verify_container() {
+  local container_id="$1"
+  local expected_network="$2"
+  local expected_tmpfs_csv="$3"
+  shift 3
+  local expected_mounts=("$@")
+  local actual_mounts expected_sorted actual_sorted actual_tmpfs expected_tmpfs
+  local privileged readonly_root network_mode cap_drop security_opt devices port_bindings
+
+  privileged="$(docker inspect --format '{{.HostConfig.Privileged}}' "$container_id")"
+  readonly_root="$(docker inspect --format '{{.HostConfig.ReadonlyRootfs}}' "$container_id")"
+  network_mode="$(docker inspect --format '{{.HostConfig.NetworkMode}}' "$container_id")"
+  cap_drop="$(docker inspect --format '{{json .HostConfig.CapDrop}}' "$container_id")"
+  security_opt="$(docker inspect --format '{{json .HostConfig.SecurityOpt}}' "$container_id")"
+  devices="$(docker inspect --format '{{json .HostConfig.Devices}}' "$container_id")"
+  port_bindings="$(docker inspect --format '{{json .HostConfig.PortBindings}}' "$container_id")"
+
+  [[ "$privileged" == 'false' ]] || die "container is privileged"
+  [[ "$readonly_root" == 'true' ]] || die "container root filesystem is not read-only"
+  [[ "$network_mode" == "$expected_network" ]] || die "unexpected network mode: $network_mode"
+  [[ "$cap_drop" == '["ALL"]' ]] || die "Linux capabilities are not fully dropped: $cap_drop"
+  [[ "$security_opt" == *'no-new-privileges'* ]] || die "no-new-privileges is missing"
+  [[ "$devices" == '[]' || "$devices" == 'null' ]] || die "unexpected devices are exposed"
+  [[ "$port_bindings" == '{}' || "$port_bindings" == 'null' ]] || die "unexpected published ports are present"
+
+  actual_mounts="$(docker inspect --format '{{range .Mounts}}{{printf "%s|%s|%t\n" .Destination .Type .RW}}{{end}}' "$container_id")"
+  expected_sorted="$(printf '%s\n' "${expected_mounts[@]}" | LC_ALL=C sort)"
+  actual_sorted="$(printf '%s\n' "$actual_mounts" | sed '/^$/d' | LC_ALL=C sort)"
+  [[ "$actual_sorted" == "$expected_sorted" ]] || {
+    printf 'Expected mounts:\n%s\nActual mounts:\n%s\n' "$expected_sorted" "$actual_sorted" >&2
+    die "container mount allowlist mismatch"
+  }
+
+  actual_tmpfs="$(docker inspect --format '{{range $path, $options := .HostConfig.Tmpfs}}{{println $path}}{{end}}' "$container_id" | sed '/^$/d' | LC_ALL=C sort)"
+  expected_tmpfs="$(printf '%s' "$expected_tmpfs_csv" | tr ',' '\n' | sed '/^$/d' | LC_ALL=C sort)"
+  [[ "$actual_tmpfs" == "$expected_tmpfs" ]] || {
+    printf 'Expected tmpfs targets:\n%s\nActual tmpfs targets:\n%s\n' "$expected_tmpfs" "$actual_tmpfs" >&2
+    die "container tmpfs allowlist mismatch"
+  }
+}
+
+write_host_report() {
+  local container_id="$1"
+  local mode="$2"
+  local stamp="$3"
+  local report="${LOG_DIR}/${stamp}-${mode}-host-check.txt"
+  {
+    printf 'Codex Sandbox Kit host-side boundary verification\n'
+    printf 'UTC time: %s\n' "$stamp"
+    printf 'Kit version: %s\n' "$KIT_VERSION"
+    printf 'Project: %s\n' "$PROJECT_SLUG"
+    printf 'Mode: %s\n' "$mode"
+    printf 'Container ID: %s\n' "$container_id"
+    printf 'Image ID: %s\n' "$(docker inspect --format '{{.Image}}' "$container_id")"
+    printf 'Privileged: %s\n' "$(docker inspect --format '{{.HostConfig.Privileged}}' "$container_id")"
+    printf 'Read-only root: %s\n' "$(docker inspect --format '{{.HostConfig.ReadonlyRootfs}}' "$container_id")"
+    printf 'Network mode: %s\n' "$(docker inspect --format '{{.HostConfig.NetworkMode}}' "$container_id")"
+    printf 'Capability drop: %s\n' "$(docker inspect --format '{{json .HostConfig.CapDrop}}' "$container_id")"
+    printf 'Security options: %s\n' "$(docker inspect --format '{{json .HostConfig.SecurityOpt}}' "$container_id")"
+    printf 'Mounts:\n'
+    docker inspect --format '{{range .Mounts}}{{printf "  %s | %s | writable=%t\n" .Destination .Type .RW}}{{end}}' "$container_id"
+    printf 'RESULT: host-side container configuration passed\n'
+  } > "$report"
+  printf 'Host verification: %s\n' "$report" >&2
+}
+
+container_common_args=()
+set_common_args() {
+  container_common_args=(
+    --read-only
+    --cap-drop ALL
+    --security-opt no-new-privileges:true
+    --pids-limit 512
+    --memory "$PROJECT_MEMORY"
+    --cpus "$PROJECT_CPUS"
+    --init
+    --user node
+    --env HISTFILE=/dev/null
+    --env GIT_OPTIONAL_LOCKS=0
+    --env XDG_CACHE_HOME=/home/node/.cache
+    --tmpfs /tmp:rw,nosuid,nodev,size=1073741824,mode=1777
+    --tmpfs /home/node/.cache:rw,nosuid,nodev,size=2147483648,uid=1000,gid=1000,mode=0700
+    --label io.codex-sandbox.managed=true
+    --label "io.codex-sandbox.project=${PROJECT_SLUG}"
+    --label "io.codex-sandbox.kit.version=${KIT_VERSION}"
+  )
+}
+
+run_created_container() {
+  local container_id="$1"
+  local interactive="$2"
+  local exit_code=0
+  cleanup_container() {
+    docker rm -f "$container_id" >/dev/null 2>&1 || true
+  }
+  trap cleanup_container EXIT INT TERM
+  if [[ "$interactive" == 'true' ]]; then
+    docker start -ai "$container_id" || exit_code=$?
+  else
+    docker start -a "$container_id" || exit_code=$?
+  fi
+  docker inspect --format 'Container exit code: {{.State.ExitCode}}' "$container_id" || true
+  cleanup_container
+  trap - EXIT INT TERM
+  return "$exit_code"
+}
+
+create_networked_container() {
+  local interactive="$1"
+  shift
+  load_protected_mounts
+  ensure_auth_volume
+  set_common_args
+  local stamp name volume container_id tty_args=()
+  stamp="$(date -u +'%Y%m%dT%H%M%SZ')"
+  name="codex-sbx-${PROJECT_SLUG}-networked-${stamp}-$$"
+  volume="$(auth_volume_name)"
+  [[ "$interactive" == 'true' ]] && tty_args=(-it)
+
+  container_id="$(docker create "${tty_args[@]}" \
+    --name "$name" \
+    "${container_common_args[@]}" \
+    --network bridge \
+    --workdir /workspace \
+    --env CODEX_HOME=/home/node/.codex \
+    --env AGENT_MODE=networked-public \
+    --mount "type=bind,source=${REPO_DIR},target=/workspace" \
+    --mount "type=bind,source=${REPO_DIR}/.git,target=/workspace/.git,readonly" \
+    --mount "type=bind,source=${OUTBOX_DIR},target=/agent/outbox" \
+    --mount "type=bind,source=${SCRATCH_DIR},target=/agent/scratch" \
+    --mount "type=volume,source=${volume},target=/auth" \
+    --tmpfs /home/node/.codex:rw,nosuid,nodev,size=536870912,uid=1000,gid=1000,mode=0700 \
+    "${protected_mount_args[@]}" \
+    "$PROJECT_NETWORK_IMAGE" \
+    /usr/local/bin/start-networked-session "$@")"
+
+  local expected=(
+    '/workspace|bind|true'
+    '/workspace/.git|bind|false'
+    '/agent/outbox|bind|true'
+    '/agent/scratch|bind|true'
+    '/auth|volume|true'
+    "${protected_expected[@]}"
+  )
+  if ! verify_container "$container_id" bridge '/home/node/.cache,/home/node/.codex,/tmp' "${expected[@]}"; then
+    docker rm -f "$container_id" >/dev/null 2>&1 || true
+    return 1
+  fi
+  write_host_report "$container_id" networked "$stamp"
+  printf '%s' "$container_id"
+}
+
+create_offline_container() {
+  local interactive="$1"
+  shift
+  set_common_args
+  local stamp name container_id tty_args=()
+  stamp="$(date -u +'%Y%m%dT%H%M%SZ')"
+  name="codex-sbx-${PROJECT_SLUG}-offline-${stamp}-$$"
+  [[ "$interactive" == 'true' ]] && tty_args=(-it)
+
+  container_id="$(docker create "${tty_args[@]}" \
+    --name "$name" \
+    "${container_common_args[@]}" \
+    --network none \
+    --workdir /workspace \
+    --env AGENT_MODE=offline-private-test \
+    --mount "type=bind,source=${REPO_DIR},target=/source,readonly" \
+    --mount "type=bind,source=${INBOX_DIR},target=/agent/inbox,readonly" \
+    --mount "type=bind,source=${OUTBOX_DIR},target=/agent/outbox" \
+    --tmpfs /workspace:rw,nosuid,nodev,size=4294967296,uid=1000,gid=1000,mode=0700 \
+    "$PROJECT_OFFLINE_IMAGE" "$@")"
+
+  local expected=(
+    '/source|bind|false'
+    '/agent/inbox|bind|false'
+    '/agent/outbox|bind|true'
+  )
+  if ! verify_container "$container_id" none '/home/node/.cache,/tmp,/workspace' "${expected[@]}"; then
+    docker rm -f "$container_id" >/dev/null 2>&1 || true
+    return 1
+  fi
+  write_host_report "$container_id" offline "$stamp"
+  printf '%s' "$container_id"
+}
+
+create_login_container() {
+  local interactive="$1"
+  shift
+  ensure_auth_volume
+  set_common_args
+  local stamp name volume container_id tty_args=()
+  stamp="$(date -u +'%Y%m%dT%H%M%SZ')"
+  name="codex-sbx-${PROJECT_SLUG}-login-${stamp}-$$"
+  volume="$(auth_volume_name)"
+  [[ "$interactive" == 'true' ]] && tty_args=(-it)
+
+  container_id="$(docker create "${tty_args[@]}" \
+    --name "$name" \
+    "${container_common_args[@]}" \
+    --network bridge \
+    --workdir /home/node \
+    --env CODEX_HOME=/home/node/.codex \
+    --env AGENT_MODE=networked-public \
+    --mount "type=volume,source=${volume},target=/auth" \
+    --tmpfs /home/node/.codex:rw,nosuid,nodev,size=536870912,uid=1000,gid=1000,mode=0700 \
+    "$PROJECT_NETWORK_IMAGE" \
+    /usr/local/bin/start-auth-session "$@")"
+
+  local expected=(
+    '/auth|volume|true'
+  )
+  if ! verify_container "$container_id" bridge '/home/node/.cache,/home/node/.codex,/tmp' "${expected[@]}"; then
+    docker rm -f "$container_id" >/dev/null 2>&1 || true
+    return 1
+  fi
+  write_host_report "$container_id" login "$stamp"
+  printf '%s' "$container_id"
+}
+
+cmd_init() {
+  local slug="${1:-}"
+  [[ -n "$slug" ]] || die "usage: sandboxctl init <slug>"
+  validate_slug "$slug"
+  local root
+  root="$(project_root "$slug")"
+  [[ ! -e "$root" ]] || die "project directory already exists: $root"
+  mkdir -p "$root"/{repo,inbox,outbox,scratch,control/logs}
+  {
+    printf 'PROJECT_SLUG=%s\n' "$slug"
+    printf 'PROJECT_CPUS=6\n'
+    printf 'PROJECT_MEMORY=8g\n'
+    printf 'PROJECT_NETWORK_IMAGE=%s\n' "$NETWORK_IMAGE"
+    printf 'PROJECT_OFFLINE_IMAGE=%s\n' "$OFFLINE_IMAGE"
+  } > "$root/control/project.env"
+  {
+    printf '# One repository-relative path per line. Existing paths are mounted read-only.\n'
+    printf '# Security does not depend on this list; use it for trusted project policies.\n'
+  } > "$root/control/protected-paths.txt"
+  chmod 0700 "$root/control"
+  chmod 0700 "$root/control/logs"
+  chmod 0600 "$root/control/project.env" "$root/control/protected-paths.txt"
+  note "Created project boundary: $root"
+  note "Clone or initialize the Git repository in: $root/repo"
+}
+
+cmd_build() {
+  require_command docker
+  note "Building pinned networked image: $NETWORK_IMAGE"
+  docker build \
+    --build-arg "BASE_IMAGE=$BASE_IMAGE" \
+    --build-arg "KIT_VERSION=$KIT_VERSION" \
+    --build-arg "CODEX_VERSION=$CODEX_VERSION" \
+    --build-arg "CODEX_PACKAGE_INTEGRITY=$CODEX_PACKAGE_INTEGRITY" \
+    --build-arg "CODEX_LINUX_X64_INTEGRITY=$CODEX_LINUX_X64_INTEGRITY" \
+    --label "io.codex-sandbox.codex.package-integrity=$CODEX_PACKAGE_INTEGRITY" \
+    --label "io.codex-sandbox.codex.linux-x64-integrity=$CODEX_LINUX_X64_INTEGRITY" \
+    -f "$KIT_ROOT/images/networked.Dockerfile" \
+    -t "$NETWORK_IMAGE" "$KIT_ROOT"
+  note "Building pinned offline image: $OFFLINE_IMAGE"
+  docker build \
+    --build-arg "BASE_IMAGE=$BASE_IMAGE" \
+    --build-arg "KIT_VERSION=$KIT_VERSION" \
+    -f "$KIT_ROOT/images/offline.Dockerfile" \
+    -t "$OFFLINE_IMAGE" "$KIT_ROOT"
+}
+
+cmd_doctor() {
+  local slug="${1:-}"
+  [[ -n "$slug" ]] || die "usage: sandboxctl doctor <slug>"
+  require_command docker
+  require_command git
+  docker info >/dev/null
+  load_project "$slug"
+  ensure_project_layout
+  ensure_images
+  load_protected_mounts
+  note "PASS: Docker daemon is available"
+  note "PASS: project layout is complete"
+  note "PASS: normal Git metadata directory exists"
+  note "PASS: pinned v2 images and labels match"
+  note "PASS: protected paths are valid"
+  note "RESULT: project doctor passed"
+}
+
+cmd_run() {
+  local slug="${1:-}"
+  [[ -n "$slug" ]] || die "usage: sandboxctl run <slug> [initial prompt]"
+  shift
+  load_project "$slug"
+  ensure_project_layout
+  ensure_images
+  local container_id
+  container_id="$(create_networked_container true \
+    codex --strict-config --disable apps --disable remote_plugin \
+    --dangerously-bypass-approvals-and-sandbox "$@")"
+  run_created_container "$container_id" true
+}
+
+cmd_exec() {
+  local slug="${1:-}"
+  [[ -n "$slug" ]] || die "usage: sandboxctl exec <slug> -- <command>"
+  shift
+  [[ "${1:-}" == '--' ]] || die "usage: sandboxctl exec <slug> -- <command>"
+  shift
+  [[ "$#" -gt 0 ]] || die "a command is required"
+  load_project "$slug"
+  ensure_project_layout
+  ensure_images
+  local container_id
+  container_id="$(create_networked_container false "$@")"
+  run_created_container "$container_id" false
+}
+
+cmd_shell() {
+  local slug="${1:-}"
+  [[ -n "$slug" ]] || die "usage: sandboxctl shell <slug>"
+  load_project "$slug"
+  ensure_project_layout
+  ensure_images
+  local container_id
+  container_id="$(create_networked_container true bash)"
+  run_created_container "$container_id" true
+}
+
+cmd_offline() {
+  local slug="${1:-}"
+  [[ -n "$slug" ]] || die "usage: sandboxctl offline <slug> -- <command>"
+  shift
+  [[ "${1:-}" == '--' ]] || die "usage: sandboxctl offline <slug> -- <command>"
+  shift
+  [[ "$#" -gt 0 ]] || die "a command is required"
+  load_project "$slug"
+  ensure_project_layout
+  ensure_images
+  local container_id
+  container_id="$(create_offline_container false "$@")"
+  run_created_container "$container_id" false
+}
+
+cmd_login() {
+  local slug="${1:-}"
+  [[ -n "$slug" ]] || die "usage: sandboxctl login <slug>"
+  load_project "$slug"
+  ensure_project_layout
+  ensure_images
+  local container_id
+  container_id="$(create_login_container true \
+    codex login --device-auth)"
+  run_created_container "$container_id" true
+}
+
+cmd_auth_status() {
+  local slug="${1:-}"
+  [[ -n "$slug" ]] || die "usage: sandboxctl auth-status <slug>"
+  load_project "$slug"
+  ensure_project_layout
+  ensure_images
+  local container_id
+  container_id="$(create_login_container false \
+    codex login status)"
+  run_created_container "$container_id" false
+}
+
+cmd_logout() {
+  local slug="${1:-}"
+  [[ -n "$slug" ]] || die "usage: sandboxctl logout <slug>"
+  load_project "$slug"
+  ensure_project_layout
+  ensure_images
+  local container_id
+  container_id="$(create_login_container false \
+    codex logout)"
+  run_created_container "$container_id" false
+}
+
+cmd_destroy_auth() {
+  local slug="${1:-}"
+  local confirmation="${2:-}"
+  [[ -n "$slug" && "$confirmation" == '--yes' ]] \
+    || die "usage: sandboxctl destroy-auth <slug> --yes"
+  load_project "$slug"
+  local volume
+  volume="$(auth_volume_name)"
+  docker volume inspect "$volume" >/dev/null 2>&1 || die "auth volume does not exist: $volume"
+  docker volume rm "$volume"
+  note "Removed project authentication volume: $volume"
+}
+
+cmd_package() {
+  local slug="${1:-}"
+  [[ -n "$slug" ]] || die "usage: sandboxctl package <slug>"
+  load_project "$slug"
+  ensure_project_layout
+  git -C "$REPO_DIR" rev-parse --verify HEAD >/dev/null 2>&1 \
+    || die "repository needs a baseline commit before packaging"
+  local stamp destination file
+  stamp="$(date -u +'%Y%m%dT%H%M%SZ')"
+  destination="${OUTBOX_DIR}/review-${stamp}"
+  mkdir -p "$destination"
+  git -C "$REPO_DIR" status --short > "$destination/git-status.txt"
+  git -C "$REPO_DIR" diff --stat HEAD > "$destination/diff-stat.txt"
+  git -C "$REPO_DIR" diff --binary --full-index HEAD > "$destination/changes.patch"
+  while IFS= read -r -d '' file; do
+    git -C "$REPO_DIR" diff --binary --full-index --no-index \
+      -- /dev/null "$REPO_DIR/$file" >> "$destination/changes.patch" || true
+  done < <(git -C "$REPO_DIR" ls-files --others --exclude-standard -z)
+  for file in REPORT.md SOURCES.md TEST_RESULTS.md; do
+    if [[ -f "$REPO_DIR/.agent/$file" ]]; then
+      cp "$REPO_DIR/.agent/$file" "$destination/$file"
+    fi
+  done
+  (
+    cd "$destination"
+    find . -type f ! -name SHA256SUMS.txt -print0 \
+      | sort -z \
+      | xargs -0 sha256sum > SHA256SUMS.txt
+  )
+  note "$destination"
+}
+
+usage() {
+  cat <<'EOF'
+Usage: sandboxctl <command> [arguments]
+
+Commands:
+  init <slug>                 Create an isolated project directory layout
+  build                       Build the two pinned v2 images
+  doctor <slug>               Validate host, project, and image prerequisites
+  login <slug>                Sign in through ChatGPT device authorization
+  auth-status <slug>          Check whether the project auth volume is signed in
+  logout <slug>               Remove saved credentials through Codex
+  destroy-auth <slug> --yes   Delete the project auth volume
+  run <slug> [prompt]         Start the interactive autonomous Codex session
+  shell <slug>                Start a diagnostic shell in the networked boundary
+  exec <slug> -- <command>    Run a noninteractive command in the networked boundary
+  offline <slug> -- <command> Run a command against a fresh offline source copy
+  package <slug>              Produce a trusted WSL review bundle
+EOF
+}
+
+main() {
+  read_versions
+  local command="${1:-}"
+  [[ -n "$command" ]] || { usage; exit 2; }
+  shift
+  case "$command" in
+    init) cmd_init "$@" ;;
+    build) cmd_build "$@" ;;
+    doctor) cmd_doctor "$@" ;;
+    login) cmd_login "$@" ;;
+    auth-status) cmd_auth_status "$@" ;;
+    logout) cmd_logout "$@" ;;
+    destroy-auth) cmd_destroy_auth "$@" ;;
+    run) cmd_run "$@" ;;
+    shell) cmd_shell "$@" ;;
+    exec) cmd_exec "$@" ;;
+    offline) cmd_offline "$@" ;;
+    package) cmd_package "$@" ;;
+    help|-h|--help) usage ;;
+    *) die "unknown command: $command" ;;
+  esac
+}
+
+main "$@"

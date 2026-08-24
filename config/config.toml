@@ -1,0 +1,38 @@
+# Root-owned system configuration. CODEX_HOME is recreated for every session;
+# only auth.json is synchronized with the project-specific authentication volume.
+sandbox_mode = "danger-full-access"
+approval_policy = "never"
+web_search = "indexed"
+allow_login_shell = false
+check_for_update_on_startup = false
+cli_auth_credentials_store = "file"
+forced_login_method = "chatgpt"
+
+[features]
+apps = false
+remote_plugin = false
+
+[apps._default]
+enabled = false
+destructive_enabled = false
+open_world_enabled = false
+
+[history]
+persistence = "none"
+
+[shell_environment_policy]
+inherit = "core"
+ignore_default_excludes = false
+set = { AGENT_MODE = "networked-public", GIT_OPTIONAL_LOCKS = "0", HISTFILE = "/dev/null" }
+exclude = [
+  "AWS_*",
+  "AZURE_*",
+  "GOOGLE_*",
+  "GITHUB_TOKEN",
+  "GH_TOKEN",
+  "OPENAI_API_KEY",
+  "*_KEY",
+  "*_SECRET",
+  "*_TOKEN",
+  "SSH_AUTH_SOCK"
+]
