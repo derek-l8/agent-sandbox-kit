@@ -299,7 +299,7 @@ write_host_report() {
   local stamp="$3"
   local report="${LOG_DIR}/${stamp}-${mode}-host-check.txt"
   {
-    printf 'Codex Sandbox Kit host-side boundary verification\n'
+    printf 'Agent Sandbox Kit host-side boundary verification\n'
     printf 'UTC time: %s\n' "$stamp"
     printf 'Kit version: %s\n' "$KIT_VERSION"
     printf 'Project: %s\n' "$PROJECT_SLUG"

@@ -11,7 +11,7 @@ fail() {
 
 while IFS= read -r script; do
   bash -n "$script" || fail "shell syntax: $script"
-done < <(find "$root" -type f -name '*.sh' -o -path "$root/bin/sandboxctl")
+done < <(find "$root" \( -type f -name '*.sh' -o -path "$root/bin/sandboxctl" -o -path "$root/bin/sbx" \))
 
 # Run every Docker-free suite from this one entry point. Any suite failure
 # aborts static.sh with a nonzero status.
@@ -26,6 +26,9 @@ run_suite command-reachability.sh
 run_suite control-flow.sh
 run_suite codex-auth-control-flow.sh
 run_suite launcher-boundaries.sh
+run_suite adapter-conformance.sh
+run_suite sbx-cli.sh
+run_suite install.sh
 
 python3 - <<'PY' "$root/config/config.toml" "$root/config/requirements.toml"
 import sys

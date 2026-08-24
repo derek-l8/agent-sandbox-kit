@@ -1,7 +1,20 @@
 # Maintainer and Security Reference
 
-These are implementation notes for the container boundary. The project is
-experimental, unaudited, and intended for personal, reviewed repositories.
+These are implementation notes for the Agent Sandbox Kit container boundary.
+The project is experimental, unaudited, and intended for personal, reviewed
+repositories.
+
+## CLI and adapter boundary
+
+`bin/sbx` performs only allowlisted agent/action translation and delegates to
+`bin/sandboxctl`. The explicit registry under `adapters/` holds agent identity,
+image/version keys, executable, authentication strategy, validation routine,
+and compatibility command routes. It cannot supply Docker arguments.
+
+The shared launcher retains ownership of isolation flags, allowed mounts and
+their post-create verification, resources, locking, cleanup, and protected
+paths. Adding an agent therefore requires launcher and security review, not
+only an adapter file. See [Adding an Agent](ADDING-AN-AGENT.md).
 
 ## Security objective
 
