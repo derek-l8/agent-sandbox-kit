@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+SBX_KIT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SBX_CTL="${SBX_KIT_ROOT}/bin/sandboxctl"
+source "${SBX_KIT_ROOT}/adapters/registry.sh"
+
+die() {
+  printf 'ERROR: %s\n' "$*" >&2
+  exit 2
+}
+
+usage() {
+  cat <<'EOF'
+Agent Sandbox Kit
+
+Usage:
+  sbx <agent> <action> <project> [arguments]
+  sbx init <project>
+  sbx build
+
+Agents: codex, opencode
+Actions: run, login, doctor, shell, exec
+
+Examples:
+  sbx codex run my-project
+  sbx opencode login my-project
+  sbx codex exec my-project -- npm test
+
+Run bin/sandboxctl --help for advanced and compatibility commands.
+EOF
+}
+
+main() {
+  local first="${1:-}"
+  case "$first" in
+    help|-h|--help|'') usage; [[ -n "$first" ]] || return 2; return 0 ;;
+    init|build)
+      shift
+      exec "$SBX_CTL" "$first" "$@"
+      ;;
+  esac
+
+  local agent="$first" action="${2:-}" legacy
+  sbx_adapter_is_registered "$agent" \
+    || die "unknown agent: ${agent:-<missing>} (expected: ${SBX_AGENTS[*]})"
+  [[ -n "$action" ]] || die "missing action for agent $agent"
+  legacy="$(sbx_adapter_legacy_command "$agent" "$action")"
+  [[ -n "$legacy" ]] \
+    || die "invalid action '$action' for agent '$agent' (expected: ${SBX_ADAPTER_ACTIONS[$agent]})"
+  shift 2
+  exec "$SBX_CTL" "$legacy" "$@"
+}
+
+main "$@"

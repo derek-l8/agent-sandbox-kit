@@ -173,6 +173,36 @@ ensure_auth_volume() {
   fi
 }
 
+# Codex is configured for file-based credential storage, which uses only
+# auth.json. Prune before and after every Codex task/authentication command so
+# unexpected persistent content is removed and any cleanup failure is fatal.
+prune_codex_auth_volume() {
+  local volume
+  volume="$(auth_volume_name)"
+  docker volume inspect "$volume" >/dev/null 2>&1 || return 0
+  docker run --rm --network none --read-only --cap-drop ALL \
+    --security-opt no-new-privileges:true --pids-limit 64 --memory 256m \
+    --user node \
+    --mount "type=volume,source=${volume},target=/auth" \
+    --entrypoint /bin/bash "$PROJECT_NETWORK_IMAGE" \
+    /usr/local/lib/codex-sandbox/prune-auth-volume /auth \
+    >/dev/null
+}
+
+prepare_codex_command() {
+  ensure_auth_volume
+  prune_codex_auth_volume
+}
+
+finish_codex() {
+  if ! prune_codex_auth_volume; then
+    printf 'ERROR: Codex authentication-volume cleanup failed for project %s; the auth volume may contain unexpected files. Inspect it or run: sandboxctl destroy-auth %s --yes\n' \
+      "$PROJECT_SLUG" "$PROJECT_SLUG" >&2
+    return 1
+  fi
+  return 0
+}
+
 opencode_auth_volume_name() {
   printf 'codex-sbx-%s-opencode-auth-v2' "$PROJECT_SLUG"
 }
@@ -269,7 +299,7 @@ write_host_report() {
   local stamp="$3"
   local report="${LOG_DIR}/${stamp}-${mode}-host-check.txt"
   {
-    printf 'Codex Sandbox Kit host-side boundary verification\n'
+    printf 'Agent Sandbox Kit host-side boundary verification\n'
     printf 'UTC time: %s\n' "$stamp"
     printf 'Kit version: %s\n' "$KIT_VERSION"
     printf 'Project: %s\n' "$PROJECT_SLUG"
@@ -335,6 +365,24 @@ run_created_container() {
   return "$exit_code"
 }
 
+# Always attempt post-command authentication cleanup after container creation
+# or execution. Preserve an existing command failure; otherwise surface cleanup
+# failure as a nonzero result.
+run_codex_command() {
+  local create_fn="$1"
+  local interactive="$2"
+  shift 2
+  local exit_code=0 container_id=""
+  container_id="$("$create_fn" "$interactive" "$@")" || exit_code=$?
+  if [[ -n "$container_id" ]]; then
+    run_created_container "$container_id" "$interactive" || exit_code=$?
+  fi
+  if ! finish_codex; then
+    [[ "$exit_code" -ne 0 ]] || exit_code=1
+  fi
+  return "$exit_code"
+}
+
 create_networked_container() {
   local interactive="$1"
   shift
@@ -358,7 +406,7 @@ create_networked_container() {
     --mount "type=bind,source=${REPO_DIR}/.git,target=/workspace/.git,readonly" \
     --mount "type=bind,source=${OUTBOX_DIR},target=/agent/outbox" \
     --mount "type=bind,source=${SCRATCH_DIR},target=/agent/scratch" \
-    --mount "type=volume,source=${volume},target=/auth" \
+    --mount "type=volume,source=${volume},target=/auth,readonly" \
     --tmpfs /home/node/.codex:rw,nosuid,nodev,size=536870912,uid=1000,gid=1000,mode=0700 \
     "${protected_mount_args[@]}" \
     "$PROJECT_NETWORK_IMAGE" \
@@ -369,7 +417,7 @@ create_networked_container() {
     '/workspace/.git|bind|false'
     '/agent/outbox|bind|true'
     '/agent/scratch|bind|true'
-    '/auth|volume|true'
+    '/auth|volume|false'
     "${protected_expected[@]}"
   )
   if ! verify_container "$container_id" bridge '/home/node/.cache,/home/node/.codex,/tmp' "${expected[@]}"; then
@@ -416,14 +464,23 @@ create_offline_container() {
 
 create_login_container() {
   local interactive="$1"
-  shift
+  local auth_writable="$2"
+  shift 2
   ensure_auth_volume
   set_common_args
-  local stamp name volume container_id tty_args=()
+  local stamp name volume container_id tty_args=() auth_mount auth_expected
+  local auth_readonly_env=0
   stamp="$(date -u +'%Y%m%dT%H%M%SZ')"
   name="codex-sbx-${PROJECT_SLUG}-login-${stamp}-$$"
   volume="$(auth_volume_name)"
   [[ "$interactive" == 'true' ]] && tty_args=(-it)
+  auth_mount="type=volume,source=${volume},target=/auth"
+  auth_expected='/auth|volume|true'
+  if [[ "$auth_writable" != 'true' ]]; then
+    auth_mount+=',readonly'
+    auth_expected='/auth|volume|false'
+    auth_readonly_env=1
+  fi
 
   container_id="$(docker create "${tty_args[@]}" \
     --name "$name" \
@@ -432,13 +489,14 @@ create_login_container() {
     --workdir /home/node \
     --env CODEX_HOME=/home/node/.codex \
     --env AGENT_MODE=networked-public \
-    --mount "type=volume,source=${volume},target=/auth" \
+    --env "AUTH_VOLUME_READONLY=${auth_readonly_env}" \
+    --mount "$auth_mount" \
     --tmpfs /home/node/.codex:rw,nosuid,nodev,size=536870912,uid=1000,gid=1000,mode=0700 \
     "$PROJECT_NETWORK_IMAGE" \
     /usr/local/bin/start-auth-session "$@")"
 
   local expected=(
-    '/auth|volume|true'
+    "$auth_expected"
   )
   if ! verify_container "$container_id" bridge '/home/node/.cache,/home/node/.codex,/tmp' "${expected[@]}"; then
     docker rm -f "$container_id" >/dev/null 2>&1 || true
@@ -744,11 +802,10 @@ cmd_run() {
   ensure_project_layout
   ensure_images
   acquire_session_lock codex
-  local container_id
-  container_id="$(create_networked_container true \
+  prepare_codex_command
+  run_codex_command create_networked_container true \
     codex --strict-config --disable apps --disable remote_plugin \
-    --dangerously-bypass-approvals-and-sandbox "$@")"
-  run_created_container "$container_id" true
+    --dangerously-bypass-approvals-and-sandbox "$@"
 }
 
 cmd_exec() {
@@ -762,9 +819,8 @@ cmd_exec() {
   ensure_project_layout
   ensure_images
   acquire_session_lock codex-exec
-  local container_id
-  container_id="$(create_networked_container false "$@")"
-  run_created_container "$container_id" false
+  prepare_codex_command
+  run_codex_command create_networked_container false "$@"
 }
 
 cmd_shell() {
@@ -774,9 +830,8 @@ cmd_shell() {
   ensure_project_layout
   ensure_images
   acquire_session_lock codex-shell
-  local container_id
-  container_id="$(create_networked_container true bash)"
-  run_created_container "$container_id" true
+  prepare_codex_command
+  run_codex_command create_networked_container true bash
 }
 
 cmd_offline() {
@@ -800,10 +855,9 @@ cmd_login() {
   load_project "$slug"
   ensure_project_layout
   ensure_images
-  local container_id
-  container_id="$(create_login_container true \
-    codex login --device-auth)"
-  run_created_container "$container_id" true
+  prepare_codex_command
+  run_codex_command create_login_container true true \
+    codex login --device-auth
 }
 
 cmd_auth_status() {
@@ -812,10 +866,9 @@ cmd_auth_status() {
   load_project "$slug"
   ensure_project_layout
   ensure_images
-  local container_id
-  container_id="$(create_login_container false \
-    codex login status)"
-  run_created_container "$container_id" false
+  prepare_codex_command
+  run_codex_command create_login_container false false \
+    codex login status
 }
 
 cmd_logout() {
@@ -824,10 +877,9 @@ cmd_logout() {
   load_project "$slug"
   ensure_project_layout
   ensure_images
-  local container_id
-  container_id="$(create_login_container false \
-    codex logout)"
-  run_created_container "$container_id" false
+  prepare_codex_command
+  run_codex_command create_login_container false true \
+    codex logout
 }
 
 cmd_destroy_auth() {

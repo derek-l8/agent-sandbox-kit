@@ -6,6 +6,7 @@
 #   - junk files and directories are removed;
 #   - auth.json remains and becomes mode 0600;
 #   - absence of auth.json is valid;
+#   - an auth.json directory or symlink is removed;
 #   - a non-writable directory produces a visible nonzero result rather than
 #     a false pass;
 #   - a missing directory is refused.
@@ -80,5 +81,25 @@ rc=0
 bash "$prune" "$work/does-not-exist" > /dev/null 2>&1 || rc=$?
 [[ "$rc" -ne 0 ]] || fail_out "prune accepted a missing directory"
 echo "PASS: missing directory refused"
+
+# --- Case 6: a directory cannot masquerade as auth.json. ---
+d6="$work/case6"
+mkdir -p "$d6/auth.json"
+touch "$d6/auth.json/junk"
+bash "$prune" "$d6" || fail_out "prune failed to remove auth.json directory"
+[[ ! -e "$d6/auth.json" ]] || fail_out "auth.json directory survived pruning"
+echo "PASS: auth.json directory removed"
+
+# --- Case 7: a symlink cannot masquerade as auth.json. ---
+d7="$work/case7"
+mkdir -p "$d7"
+printf 'target\n' > "$work/symlink-target"
+ln -s "$work/symlink-target" "$d7/auth.json"
+bash "$prune" "$d7" || fail_out "prune failed to remove auth.json symlink"
+[[ ! -e "$d7/auth.json" && ! -L "$d7/auth.json" ]] \
+  || fail_out "auth.json symlink survived pruning"
+[[ "$(cat "$work/symlink-target")" == "target" ]] \
+  || fail_out "prune modified the symlink target"
+echo "PASS: auth.json symlink removed without changing its target"
 
 printf 'RESULT: prune-script checks passed\n'

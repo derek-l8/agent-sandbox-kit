@@ -20,12 +20,14 @@ COPY config/requirements.toml /etc/codex/requirements.toml
 COPY container/check-common.sh /usr/local/lib/codex-sandbox/check-common.sh
 COPY container/check-networked.sh /usr/local/bin/check-networked-boundaries
 COPY container/check-login.sh /usr/local/bin/check-login-boundaries
+COPY container/prune-auth-volume.sh /usr/local/lib/codex-sandbox/prune-auth-volume
 COPY container/run-with-project-auth.sh /usr/local/bin/run-with-project-auth
 COPY container/start-auth-session.sh /usr/local/bin/start-auth-session
 COPY container/start-networked-session.sh /usr/local/bin/start-networked-session
 
 RUN chmod 0444 /etc/codex/config.toml /etc/codex/requirements.toml \
     && chmod 0555 /usr/local/lib/codex-sandbox/check-common.sh \
+        /usr/local/lib/codex-sandbox/prune-auth-volume \
         /usr/local/bin/check-networked-boundaries \
         /usr/local/bin/check-login-boundaries \
         /usr/local/bin/run-with-project-auth \

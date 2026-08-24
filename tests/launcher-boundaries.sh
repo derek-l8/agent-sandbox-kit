@@ -86,8 +86,10 @@ docker() {
         '{{json .HostConfig.SecurityOpt}}') echo '["no-new-privileges:true"]' ;;
         '{{json .HostConfig.Devices}}'|'{{json .HostConfig.PortBindings}}') echo "null" ;;
         *Mounts*)
-          if [[ "${MOUNTS_MODE:-task}" == "login" ]]; then
+          if [[ "${MOUNTS_MODE:-task}" == "login" || "${MOUNTS_MODE:-task}" == "codex-login" ]]; then
             printf '/auth|volume|true\n'
+          elif [[ "${MOUNTS_MODE:-task}" == "codex-status" ]]; then
+            printf '/auth|volume|false\n'
           else
             printf '%s\n' \
               '/agent/outbox|bind|true' \
@@ -97,8 +99,12 @@ docker() {
               '/workspace/.git|bind|false'
           fi ;;
         *Tmpfs*)
-          printf '%s\n' /home/node/.cache /home/node/.config \
-            /home/node/.local/share/opencode /home/node/.local/state /tmp ;;
+          if [[ "${MOUNTS_MODE:-task}" == codex-* ]]; then
+            printf '%s\n' /home/node/.cache /home/node/.codex /tmp
+          else
+            printf '%s\n' /home/node/.cache /home/node/.config \
+              /home/node/.local/share/opencode /home/node/.local/state /tmp
+          fi ;;
         '{{.State.Status}}') echo "exited" ;;
         '{{.State.ExitCode}}') echo "0" ;;
         *) echo "stub" ;;
@@ -139,6 +145,20 @@ record_command() {
   if grep -Eq -- " $opencode_image .*(/usr/local/bin/start-opencode|--entrypoint)" "$work/create-args.txt"; then
     fail "$label passes an entrypoint selection as a post-image command"
   fi
+}
+
+record_codex_command() {
+  local label="$1" mode="$2"
+  shift 2
+  rm -f "$work/calls.txt"
+  local rc=0
+  CALLLOG="$work/calls.txt" WS="$ws" LIB="$work/sandboxctl-lib.sh" ROOT="$root" \
+    MOUNTS_MODE="$mode" \
+    bash "$work/harness.sh" "$@" > /dev/null 2> "$work/stderr.txt" || rc=$?
+  [[ "$rc" -eq 0 ]] || fail "$label exited with status $rc: $(cat "$work/stderr.txt")"
+  [[ "$(grep -c '^CREATE ' "$work/calls.txt")" == 1 ]] \
+    || fail "$label did not create exactly one container"
+  grep '^CREATE ' "$work/calls.txt" | sed 's/^CREATE //; s/ $//' > "$work/create-args.txt"
 }
 
 assert_create() {
@@ -224,6 +244,48 @@ assert_create "--entrypoint /usr/local/bin/start-opencode-auth-session $opencode
 record_command "auth-status-opencode" login cmd_auth_status_opencode "$slug"
 assert_create "--entrypoint /usr/local/bin/start-opencode-auth-session $opencode_image opencode auth list" \
   "auth-status container lists providers"
+
+# --- Codex task family: auth read-only --------------------------------------
+record_codex_command "run" codex-task cmd_run "$slug"
+assert_create "type=volume,source=codex-sbx-${slug}-auth-v2,target=/auth,readonly" \
+  "Codex run mounts authentication read-only"
+assert_create "type=bind,source=$proj/repo,target=/workspace" \
+  "Codex run mounts the selected repository"
+assert_create "type=bind,source=$proj/repo/.git,target=/workspace/.git,readonly" \
+  "Codex run keeps Git metadata read-only"
+assert_create "target=/agent/inbox" "Codex run excludes the private inbox" absent
+
+record_codex_command "shell" codex-task cmd_shell "$slug"
+assert_create "target=/auth,readonly" "Codex shell keeps authentication read-only"
+assert_create "start-networked-session bash" "Codex shell forwards bash"
+
+record_codex_command "exec" codex-task cmd_exec "$slug" -- git status
+assert_create "target=/auth,readonly" "Codex exec keeps authentication read-only"
+assert_create "start-networked-session git status" "Codex exec forwards the command"
+
+# --- Codex authentication family: auth writable, workspace absent -----------
+record_codex_command "login" codex-login cmd_login "$slug"
+assert_create "type=volume,source=codex-sbx-${slug}-auth-v2,target=/auth " \
+  "Codex login mounts authentication read-write"
+assert_create "target=/auth,readonly" "Codex login never mounts authentication read-only" absent
+assert_create "target=/workspace" "Codex login never mounts the workspace" absent
+assert_create "start-auth-session codex login --device-auth" \
+  "Codex login uses the authentication entrypoint"
+
+record_codex_command "auth-status" codex-status cmd_auth_status "$slug"
+assert_create "target=/auth,readonly" \
+  "Codex auth-status mounts authentication read-only"
+assert_create "target=/workspace" "Codex auth-status never mounts the workspace" absent
+assert_create "start-auth-session codex login status" \
+  "Codex auth-status uses the authentication entrypoint"
+
+record_codex_command "logout" codex-login cmd_logout "$slug"
+assert_create "type=volume,source=codex-sbx-${slug}-auth-v2,target=/auth " \
+  "Codex logout mounts authentication read-write"
+assert_create "target=/auth,readonly" \
+  "Codex logout never mounts authentication read-only" absent
+assert_create "start-auth-session codex logout" \
+  "Codex logout uses the authentication entrypoint"
 
 # --- Backward compatibility: legacy project.env without OpenCode keys -------
 legacy_slug="legacy-probe"

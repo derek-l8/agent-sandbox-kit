@@ -11,7 +11,7 @@ fail() {
 
 while IFS= read -r script; do
   bash -n "$script" || fail "shell syntax: $script"
-done < <(find "$root" -type f -name '*.sh' -o -path "$root/bin/sandboxctl")
+done < <(find "$root" \( -type f -name '*.sh' -o -path "$root/bin/sandboxctl" -o -path "$root/bin/sbx" \))
 
 # Run every Docker-free suite from this one entry point. Any suite failure
 # aborts static.sh with a nonzero status.
@@ -24,7 +24,11 @@ run_suite() {
 run_suite prune-script.sh
 run_suite command-reachability.sh
 run_suite control-flow.sh
+run_suite codex-auth-control-flow.sh
 run_suite launcher-boundaries.sh
+run_suite adapter-conformance.sh
+run_suite sbx-cli.sh
+run_suite install.sh
 
 python3 - <<'PY' "$root/config/config.toml" "$root/config/requirements.toml"
 import sys
@@ -72,6 +76,17 @@ grep -Eq '^OPENCODE_PACKAGE_INTEGRITY=sha512-[A-Za-z0-9+/]+={0,2}$' "$root/versi
   || fail "OpenCode package integrity pin"
 grep -Eq '^OPENCODE_LINUX_X64_INTEGRITY=sha512-[A-Za-z0-9+/]+={0,2}$' "$root/versions.lock" \
   || fail "OpenCode linux-x64 binary integrity pin"
+
+# Both agent images must contain the root-owned fail-closed authentication
+# pruner. Codex task wrappers must never try to synchronize through a
+# read-only /auth mount.
+for dockerfile in networked.Dockerfile opencode.Dockerfile; do
+  grep -qF 'COPY container/prune-auth-volume.sh /usr/local/lib/codex-sandbox/prune-auth-volume' \
+    "$root/images/$dockerfile" \
+    || fail "$dockerfile does not include the authentication-volume pruner"
+done
+grep -qF '[[ -w /auth ]] || return 0' "$root/container/run-with-project-auth.sh" \
+  || fail "Codex auth wrapper does not skip synchronization for read-only task mounts"
 
 # The pinned OpenCode image verifies both integrity values before installing.
 for token in \
