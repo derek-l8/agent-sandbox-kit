@@ -1,4 +1,7 @@
-# Codex Sandbox v2: Maintainer and Security Reference
+# Maintainer and Security Reference
+
+These are implementation notes for the container boundary. The project is
+experimental, unaudited, and intended for personal, reviewed repositories.
 
 ## Security objective
 
@@ -8,24 +11,21 @@ its disposable caches, and its project-specific Codex login. The design does
 not claim protection against Docker, kernel, or virtualization vulnerabilities.
 
 The offline runner separates private-data access from Codex and outbound
-communication. Human-controlled WSL remains the only promotion authority.
+communication. The intended workflow performs review and Git promotion from
+WSL.
 
-## Why v2 does not use Dev Containers as the boundary
+## Why the kit does not use Dev Containers as the boundary
 
 VS Code Dev Containers can add mounts and sockets that are not declared in a
-project's `devcontainer.json`. The previous deployment included a shared
-`/vscode` volume and a WSLg Wayland socket. V2 creates containers directly with
-Docker, verifies the final Docker configuration before start, and treats VS
-Code only as a trusted editor before or after autonomous execution.
+project's `devcontainer.json`. The kit instead creates containers directly
+with Docker, verifies the final Docker configuration before start, and treats
+VS Code only as a trusted editor before or after autonomous execution.
 
 ## Trusted and untrusted components
 
 Trusted WSL components:
 
-- `~/agent-sandbox-kit/bin/sandboxctl` (the multi-agent kit; installed
-  side-by-side, never copied over the stable fallback);
-- `~/codex-sandbox-kit/bin/sandboxctl` (the untouched Codex-only fallback
-  launcher; rollback target);
+- the reviewed checkout's `bin/sandboxctl` launcher;
 - pinned Dockerfiles, root-owned container checks, and Codex policy;
 - each project's `control` directory;
 - Docker itself and the WSL/Linux kernel boundary;
@@ -60,8 +60,8 @@ container cannot alter it. A second root-owned check runs inside the container.
 - `/workspace/.git`: nested read-only bind mount;
 - `/agent/scratch`: public/synthetic scratch, writable;
 - `/agent/outbox`: review output, writable;
-- `/auth`: project-specific volume containing only the synchronized
-  `auth.json` credential, writable;
+- `/auth`: project-specific authentication volume, mounted read-only for
+  task, shell, and exec sessions;
 - `/home/node/.codex`, `/home/node/.cache`, and `/tmp`: disposable tmpfs
   mounts.
 
@@ -88,33 +88,37 @@ Enforced OpenCode-specific boundaries:
   in and synchronizes only that file back on exit;
 - every OpenCode container start prunes the volume to at most `auth.json`
   inside a network-less, capability-less helper container, failing closed;
-- leftover task/login containers from previous invocations are removed before
-  a new session, and unremovable stale containers block startup;
+- before a new task session, matching OpenCode containers are removed and
+  unremovable containers block startup. Authentication commands remove finished
+  matching containers but do not stop a running authentication container;
 - writable disposable tmpfs locations (`~/.local/share/opencode`,
   `~/.config`, `~/.local/state`) absorb all other state while the root
   filesystem stays read-only;
-- managed configuration baked root-owned at `/etc/opencode/opencode.json`
-  disables autoupdate, sharing, snapshots, MCP servers, external-directory
-  access, repository plugins, default plugins, and plugin/LSP downloads, and
-  denies `git push*`, `git commit*`, `git remote*`, `git submodule*`, and
-  `gh *`;
+- managed configuration baked root-owned at `/etc/opencode/opencode.json`,
+  together with image environment settings, is intended to disable autoupdate,
+  sharing, snapshots, MCP servers, external-directory access, project/default
+  plugins, and plugin/LSP downloads, and configures denials for `git push*`,
+  `git commit*`, `git remote*`, `git submodule*`, and `gh *`;
 - `OPENCODE_DISABLE_PROJECT_CONFIG=1` is set on the image environment, on both
-  container creation paths, and again inside the auth wrapper, so repository
-  `opencode.json` files can never change managed policy;
+  container creation paths, and again inside the auth wrapper. The
+  Docker-based OpenCode smoke test checks that a repository `opencode.json`
+  sentinel does not appear in resolved configuration;
 - a repository `.opencode/` extension surface is shadowed with an empty tmpfs;
 - normal task sessions run `opencode --pure`.
 
-Codex and OpenCode share one per-project session lock
-(`control/.session-lock`), so both agents can never run against the same
-working tree concurrently.
+Codex and OpenCode task and shell commands share one per-project session lock
+(`control/.session-lock`), preventing those launcher commands from running
+against the same working tree concurrently. Authentication commands do not
+mount the working tree and do not use this lock.
 
 ### Enforced boundaries versus accepted repository-level risks
 
-The security goal of this kit is to isolate the agents from Windows files, the
-WSL home directory, credentials (SSH keys, GitHub tokens, Git configuration),
-other projects, GitHub write operations, and the Docker daemon. Project data
-in WSL is disposable; GitHub is the durable source of truth. Deletion or
-corruption of the mounted repository is an accepted risk.
+The security goal is to omit Windows files, the WSL home directory, host
+credentials (including SSH keys and GitHub tokens), other projects, and the
+Docker daemon from the verified mount list. Project data in WSL is disposable;
+GitHub is the durable source of truth. Deletion or corruption of the mounted
+repository is an accepted risk. The kit does not prevent use of credentials or
+writable remote URLs already stored inside the selected repository.
 
 Repository text content is explicitly not treated as an enforceable boundary.
 The pinned OpenCode release may still discover some nested `AGENTS.md`,
@@ -123,13 +127,9 @@ accepts that because repositories are personal and reviewed. It does not
 modify, chmod, hide, delete, or continuously scan instruction files, and it
 makes no claim that repository text cannot influence the model.
 
-Deliberately excluded (compared with earlier experimental work): a runtime
-instruction guard (`instruction-guard.sh`), polling/watch processes,
-chmod-based instruction blocking, instruction-file mode snapshots and
-restoration, fake model/provider tests intended to prove instruction
-suppression, custom binary patches, and LD_PRELOAD/ptrace/seccomp-notification
-enforcement mechanisms. The outer Docker boundary plus managed configuration
-is the entire enforcement story.
+There is no mechanism intended to prevent repository instruction files from
+influencing the agent. Isolation relies on the Docker boundary and managed
+configuration.
 
 ## Offline runner mounts
 
@@ -140,8 +140,8 @@ is the entire enforcement story.
 - `/home/node/.cache` and `/tmp`: disposable tmpfs mounts.
 
 The container uses Docker network mode `none` and contains no Codex executable.
-Project-specific dependencies should later be supplied through a separately
-reviewed and locked offline image; this is required when migrating `aihealth`.
+Projects needing additional offline dependencies require a separately reviewed
+and locked custom offline image.
 
 ## Codex configuration
 
@@ -150,10 +150,31 @@ root-owned constraints at `/etc/codex/requirements.toml`. The interactive
 runtime uses `--strict-config` to fail on unknown keys. Codex 0.148 does not
 support that flag on authentication or informational subcommands, so those
 commands rely on the same root-owned configuration without the flag. Each
-container receives a fresh tmpfs `CODEX_HOME`; a root-owned wrapper copies in
-only `/auth/auth.json` and synchronizes only that file when the command exits.
-Configuration, rules, sessions, logs, and caches cannot persist through the
-authentication volume.
+container receives a fresh tmpfs `CODEX_HOME`. Official Codex documentation
+specifies that file-backed credential storage uses
+`$CODEX_HOME/auth.json`; the enforced `cli_auth_credentials_store = "file"`
+therefore makes `auth.json` the persistent allowlist. Login diagnostics and
+other Codex state remain in disposable `CODEX_HOME`.
+
+A root-owned wrapper copies `/auth/auth.json` into `CODEX_HOME`. Task,
+shell, and exec containers mount `/auth` read-only, so refreshed credentials
+are not synchronized from those sessions. Dedicated login and logout
+containers mount `/auth` read-write without mounting the project, and the
+wrapper synchronizes `auth.json` on exit. `auth-status` uses the same
+authentication-only boundary with `/auth` read-only.
+
+This deliberately does not persist token refreshes performed during a task.
+The next task starts from the last credential written by login/logout; a new
+login may be required if that stored credential is no longer accepted.
+
+Before and after every Codex task or authentication command, the launcher runs
+the root-owned pruning script in a network-disabled, read-only,
+capability-less helper container. It removes every direct child except
+`auth.json`, normalizes that file to mode 0600, verifies the postcondition,
+and fails closed. Post-command cleanup is attempted after success, failure, and
+interrupts when control returns to the launcher. A cleanup failure is printed
+and makes an otherwise successful command fail; an existing command failure
+keeps its original status while the cleanup error remains visible.
 
 The requirements file constrains the approval/sandbox modes, disables Apps,
 plugins, browser and computer-use surfaces, disables project/user hooks, and
@@ -182,19 +203,20 @@ updates. Upgrades are deliberate maintenance events:
 4. Change `versions.lock` in one reviewable commit.
 5. Run `tests/static.sh`.
 6. Rebuild all images.
-7. Run `tests/smoke.sh` without invoking a model.
+7. Run `tests/smoke.sh` and `tests/smoke-opencode.sh` without invoking a
+   model.
 8. Authenticate a disposable project and run one tightly bounded model task
    only when a real end-to-end validation is justified.
 9. Keep the previous image until the upgraded version is accepted.
 
 ## Authentication limitation
 
-Codex must be able to use its ChatGPT credential, so a process with unrestricted
-access inside the networked runner can potentially read that project-specific
-credential. V2 reduces the blast radius by isolating authentication by project,
-excluding every other credential, using device authorization, and providing
-logout and volume-destruction commands. It does not claim to eliminate this
-risk.
+Codex must be able to use its ChatGPT credential, so a process inside the
+networked runner can potentially read that project-specific credential. The
+kit isolates authentication by project, omits host credentials from container
+mounts and filters common secret environment variables, uses device
+authorization, and provides logout and volume-destruction commands. It does
+not eliminate credential risk.
 
 If stronger protection is required, the tradeoff is a restricted egress design
 or a different execution model. Arbitrary public internet access and a secret
@@ -212,9 +234,10 @@ sourced as shell code.
 mounts for trusted policy or supervisor files. This list is not a security
 substitute for the root-owned kit controls.
 
-Custom project images may be selected in `project.env`. Before migrating
-`aihealth`, add a reviewed offline Dockerfile that installs its locked runtime
-dependencies without network access at test time.
+Custom project images may be selected in `project.env`. They must retain the
+labels, users, paths, boundary scripts, and entrypoints expected by the
+launcher. A custom offline image should install reviewed, locked runtime
+dependencies while keeping network access disabled at test time.
 
 ## Incident response
 
@@ -224,9 +247,10 @@ unexpected container behavior:
 1. Stop and remove the task container.
 2. Preserve the trusted host-side boundary report.
 3. Review the repository and outbox from trusted WSL.
-4. Run `sandboxctl logout <slug>` (and `logout-opencode <slug>`) when possible.
-5. Run `sandboxctl destroy-auth <slug> --yes`
-   (and `destroy-opencode-auth <slug> --yes`).
+4. Run `bin/sandboxctl logout <slug>` (and
+   `bin/sandboxctl logout-opencode <slug>`) when possible.
+5. Run `bin/sandboxctl destroy-auth <slug> --yes` (and
+   `bin/sandboxctl destroy-opencode-auth <slug> --yes`).
 6. Discard disposable cache and task output.
 7. Rebuild the pinned images if image integrity is in doubt.
 8. Reauthenticate only after the cause is understood.
