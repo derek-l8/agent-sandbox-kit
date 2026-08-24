@@ -210,7 +210,7 @@ done
   || fail "instruction-guard file exists"
 echo "PASS: no instruction-guard, polling, or kernel-enforcement mechanisms are present"
 
-! grep -RIn 'REPLACE_PROJECT_SLUG\|include_apps_instructions\|/mnt/c/Users/derek/Documents/Codex/2026-' "$root" \
+! grep -RIn 'REPLACE_PROJECT_SLUG\|include_apps_instructions\|/mnt/c/Users/example/Documents/Example-Workspace/2026-' "$root" \
   --exclude-dir=.git --exclude=static.sh \
   || fail "stale placeholder found"
 ! grep -RIn --exclude-dir=.git --exclude=static.sh -- '--ignore-user-config\|--ignore-rules' "$root" \
