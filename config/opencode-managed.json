@@ -1,0 +1,21 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "autoupdate": false,
+  "share": "disabled",
+  "snapshot": false,
+  "mcp": {},
+  "server": {
+    "hostname": "127.0.0.1",
+    "mdns": false
+  },
+  "permission": {
+    "external_directory": "deny",
+    "bash": {
+      "git push*": "deny",
+      "git commit*": "deny",
+      "git remote*": "deny",
+      "git submodule*": "deny",
+      "gh *": "deny"
+    }
+  }
+}

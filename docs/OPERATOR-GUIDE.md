@@ -1,7 +1,22 @@
 # Codex Sandbox v2: Operator Guide
 
-This is the daily-use guide. It assumes the kit is installed at
-`~/codex-sandbox-kit` and its images have been built.
+This is the daily-use guide. It assumes the completed multi-agent kit has been
+cloned or copied side-by-side from the source working copy at
+`~/src/codex-sandbox-kit-opencode-clean` to `~/agent-sandbox-kit`, and that
+its images have been built there.
+
+Do not copy anything into or over `~/codex-sandbox-kit`. That directory is the
+stable Codex-only fallback and must remain untouched.
+
+Rollback means stopping use of `~/agent-sandbox-kit` and returning to the
+fallback launcher:
+
+```bash
+~/agent-sandbox-kit/bin/sandboxctl <command> <slug>
+```
+
+No files are removed by rolling back; project data under
+`~/agent-workspaces` is independent of either kit installation.
 
 ## What the sandbox does
 
@@ -21,7 +36,11 @@ runner as credential-free.
 ## One-time project setup
 
 ```bash
-cd ~/codex-sandbox-kit
+cd ~/agent-sandbox-kit
+
+# Build the three pinned images (Codex networked, offline, OpenCode):
+bin/sandboxctl build
+
 bin/sandboxctl init my-project
 
 # Clone an existing repository:
@@ -40,8 +59,8 @@ modify the working tree, but `.git` is mounted read-only.
 Then verify the project and authenticate:
 
 ```bash
-~/codex-sandbox-kit/bin/sandboxctl doctor my-project
-~/codex-sandbox-kit/bin/sandboxctl login my-project
+~/agent-sandbox-kit/bin/sandboxctl doctor my-project
+~/agent-sandbox-kit/bin/sandboxctl login my-project
 ```
 
 Login uses ChatGPT device authorization and therefore uses subscription access,
@@ -52,7 +71,7 @@ not an API key.
 From trusted WSL:
 
 ```bash
-~/codex-sandbox-kit/bin/sandboxctl run my-project
+~/agent-sandbox-kit/bin/sandboxctl run my-project
 ```
 
 The launcher creates the container without VS Code, verifies the exact mount
@@ -73,7 +92,7 @@ Place only the necessary fixture files in:
 Then run a reviewed deterministic command:
 
 ```bash
-~/codex-sandbox-kit/bin/sandboxctl offline my-project -- pytest -q
+~/agent-sandbox-kit/bin/sandboxctl offline my-project -- pytest -q
 ```
 
 The source and inbox mounts are read-only. The test runs in a new tmpfs copy at
@@ -92,7 +111,7 @@ git status --short
 git diff --stat
 git diff
 
-~/codex-sandbox-kit/bin/sandboxctl package my-project
+~/agent-sandbox-kit/bin/sandboxctl package my-project
 ```
 
 Read the diff, new files, `.agent` reports, test results, source log, host-side
@@ -103,13 +122,13 @@ requests only from trusted WSL or Windows.
 
 ```bash
 # Report the active login mode without starting a model task:
-~/codex-sandbox-kit/bin/sandboxctl auth-status my-project
+~/agent-sandbox-kit/bin/sandboxctl auth-status my-project
 
 # Remove credentials using Codex:
-~/codex-sandbox-kit/bin/sandboxctl logout my-project
+~/agent-sandbox-kit/bin/sandboxctl logout my-project
 
 # Delete the entire project auth volume after logout or an incident:
-~/codex-sandbox-kit/bin/sandboxctl destroy-auth my-project --yes
+~/agent-sandbox-kit/bin/sandboxctl destroy-auth my-project --yes
 ```
 
 The volume persists only `auth.json`. Codex configuration, rules, sessions,
@@ -122,9 +141,62 @@ the pinned kit before continuing.
 ## Diagnostics
 
 ```bash
-~/codex-sandbox-kit/bin/sandboxctl doctor my-project
-~/codex-sandbox-kit/bin/sandboxctl shell my-project
+~/agent-sandbox-kit/bin/sandboxctl doctor my-project
+~/agent-sandbox-kit/bin/sandboxctl shell my-project
 ```
 
 Do not work around a failed host or container boundary check. Fix the trusted
 launcher, project control file, or image and rerun the check.
+
+## OpenCode sessions
+
+The same project boundary can be run with OpenCode instead of Codex. OpenCode
+is pinned at 1.18.21 in `versions.lock` and ships in its own image
+(`local/codex-sandbox-opencode:2.0.0`), built by the same
+`sandboxctl build`. It uses its own per-project authentication volume, separate
+from the Codex one.
+
+```bash
+# One-time checks including the OpenCode image:
+~/agent-sandbox-kit/bin/sandboxctl doctor-opencode my-project
+
+# Authenticate (device/browser flow) into the project auth volume:
+~/agent-sandbox-kit/bin/sandboxctl login-opencode my-project
+
+# Interactive autonomous session:
+~/agent-sandbox-kit/bin/sandboxctl run-opencode my-project
+
+# Diagnostic shell or a single noninteractive command:
+~/agent-sandbox-kit/bin/sandboxctl shell-opencode my-project
+~/agent-sandbox-kit/bin/sandboxctl exec-opencode my-project -- pytest -q
+
+# Maintenance:
+~/agent-sandbox-kit/bin/sandboxctl auth-status-opencode my-project
+~/agent-sandbox-kit/bin/sandboxctl logout-opencode my-project
+~/agent-sandbox-kit/bin/sandboxctl destroy-opencode-auth my-project --yes
+```
+
+OpenCode sessions enforce exactly the same container boundary as Codex: only
+the repository, outbox, scratch, and protected paths are mounted; `.git` stays
+read-only; capabilities are dropped; the root filesystem is read-only; and no
+Windows drive, WSL home, SSH material, inbox, or Docker socket is present.
+Task sessions mount the authentication volume read-only; only login/logout/
+auth-status containers can modify it. Only `auth.json` is ever persisted.
+
+Codex and OpenCode share one lock per project: while an OpenCode session runs,
+`run`, `shell`, and `exec` refuse to start for the same slug, and vice versa.
+Normal manual Git operations from trusted WSL are unaffected.
+
+Managed policy baked into the image disables automatic updates, sharing,
+snapshots, MCP servers, external-directory access, repository plugins,
+default plugins, and plugin/LSP downloads, and denies `git push`, `git commit`,
+`git remote`, `git submodule`, and `gh` commands inside the container. Project
+`opencode.json` files cannot override this (`OPENCODE_DISABLE_PROJECT_CONFIG=1`),
+and a repository `.opencode/` directory is shadowed with an empty tmpfs.
+
+Accepted limitation: the pinned OpenCode release may still discover some nested
+repository instruction files such as `AGENTS.md`, `CLAUDE.md`, or `CONTEXT.md`
+and treat them as guidance. This is accepted because repositories in this kit
+are personal and reviewed. The kit does not modify, chmod, hide, delete, or
+scan those files, and it does not claim that repository text can be prevented
+from influencing the model.
