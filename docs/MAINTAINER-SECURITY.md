@@ -22,7 +22,10 @@ Code only as a trusted editor before or after autonomous execution.
 
 Trusted WSL components:
 
-- `~/codex-sandbox-kit/bin/sandboxctl`;
+- `~/agent-sandbox-kit/bin/sandboxctl` (the multi-agent kit; installed
+  side-by-side, never copied over the stable fallback);
+- `~/codex-sandbox-kit/bin/sandboxctl` (the untouched Codex-only fallback
+  launcher; rollback target);
 - pinned Dockerfiles, root-owned container checks, and Codex policy;
 - each project's `control` directory;
 - Docker itself and the WSL/Linux kernel boundary;
@@ -65,6 +68,69 @@ container cannot alter it. A second root-owned check runs inside the container.
 There is no inbox, Docker socket, Windows drive, WSL home mount, SSH agent,
 browser profile, VS Code volume, or WSLg socket.
 
+## OpenCode adapter
+
+OpenCode runs side by side with Codex against the same project boundary. It is
+not a second sandbox design: it reuses the identical launcher verification
+(`docker create`, then full mount/tmpfs/security allowlist check before
+start), the same non-root user, capability drop, no-new-privileges,
+read-only rootfs, resource limits, protected-path mounts, and host reports.
+
+Enforced OpenCode-specific boundaries:
+
+- a separate pinned image (`opencode-ai` 1.18.21 and `opencode-linux-x64`
+  1.18.21, verified against npm integrity values from `versions.lock` before
+  installation);
+- a separate per-project authentication volume
+  (`codex-sbx-<slug>-opencode-auth-v2`, labeled for the agent and project);
+- task sessions mount authentication read-only; only login/logout/auth-status
+  containers mount it read-write; a root-owned wrapper copies only `auth.json`
+  in and synchronizes only that file back on exit;
+- every OpenCode container start prunes the volume to at most `auth.json`
+  inside a network-less, capability-less helper container, failing closed;
+- leftover task/login containers from previous invocations are removed before
+  a new session, and unremovable stale containers block startup;
+- writable disposable tmpfs locations (`~/.local/share/opencode`,
+  `~/.config`, `~/.local/state`) absorb all other state while the root
+  filesystem stays read-only;
+- managed configuration baked root-owned at `/etc/opencode/opencode.json`
+  disables autoupdate, sharing, snapshots, MCP servers, external-directory
+  access, repository plugins, default plugins, and plugin/LSP downloads, and
+  denies `git push*`, `git commit*`, `git remote*`, `git submodule*`, and
+  `gh *`;
+- `OPENCODE_DISABLE_PROJECT_CONFIG=1` is set on the image environment, on both
+  container creation paths, and again inside the auth wrapper, so repository
+  `opencode.json` files can never change managed policy;
+- a repository `.opencode/` extension surface is shadowed with an empty tmpfs;
+- normal task sessions run `opencode --pure`.
+
+Codex and OpenCode share one per-project session lock
+(`control/.session-lock`), so both agents can never run against the same
+working tree concurrently.
+
+### Enforced boundaries versus accepted repository-level risks
+
+The security goal of this kit is to isolate the agents from Windows files, the
+WSL home directory, credentials (SSH keys, GitHub tokens, Git configuration),
+other projects, GitHub write operations, and the Docker daemon. Project data
+in WSL is disposable; GitHub is the durable source of truth. Deletion or
+corruption of the mounted repository is an accepted risk.
+
+Repository text content is explicitly not treated as an enforceable boundary.
+The pinned OpenCode release may still discover some nested `AGENTS.md`,
+`CLAUDE.md`, or `CONTEXT.md` files and treat them as guidance. This kit
+accepts that because repositories are personal and reviewed. It does not
+modify, chmod, hide, delete, or continuously scan instruction files, and it
+makes no claim that repository text cannot influence the model.
+
+Deliberately excluded (compared with earlier experimental work): a runtime
+instruction guard (`instruction-guard.sh`), polling/watch processes,
+chmod-based instruction blocking, instruction-file mode snapshots and
+restoration, fake model/provider tests intended to prove instruction
+suppression, custom binary patches, and LD_PRELOAD/ptrace/seccomp-notification
+enforcement mechanisms. The outer Docker boundary plus managed configuration
+is the entire enforcement story.
+
 ## Offline runner mounts
 
 - `/source`: current repository, read-only;
@@ -102,17 +168,20 @@ sandbox because the inner Codex sandbox is intentionally bypassed.
 - an immutable base-image digest;
 - an exact Codex CLI version;
 - npm integrity values for the wrapper and Linux x64 binary package;
+- an exact OpenCode version with npm integrity values for its package and
+  Linux x64 binary, plus the local OpenCode image tag;
 - the local image tags.
 
-Do not use `latest`, floating base tags without digests, or automatic Codex
+Do not use `latest`, floating base tags without digests, or automatic agent
 updates. Upgrades are deliberate maintenance events:
 
-1. Review the current official Codex configuration and CLI documentation.
+1. Review the current official Codex/OpenCode configuration and CLI
+   documentation.
 2. Resolve the new npm version and package integrity values.
 3. Resolve the new multi-platform base-image digest.
 4. Change `versions.lock` in one reviewable commit.
 5. Run `tests/static.sh`.
-6. Rebuild both images.
+6. Rebuild all images.
 7. Run `tests/smoke.sh` without invoking a model.
 8. Authenticate a disposable project and run one tightly bounded model task
    only when a real end-to-end validation is justified.
@@ -155,8 +224,9 @@ unexpected container behavior:
 1. Stop and remove the task container.
 2. Preserve the trusted host-side boundary report.
 3. Review the repository and outbox from trusted WSL.
-4. Run `sandboxctl logout <slug>` when possible.
-5. Run `sandboxctl destroy-auth <slug> --yes`.
+4. Run `sandboxctl logout <slug>` (and `logout-opencode <slug>`) when possible.
+5. Run `sandboxctl destroy-auth <slug> --yes`
+   (and `destroy-opencode-auth <slug> --yes`).
 6. Discard disposable cache and task output.
 7. Rebuild the pinned images if image integrity is in doubt.
 8. Reauthenticate only after the cause is understood.

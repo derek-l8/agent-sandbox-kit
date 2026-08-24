@@ -29,14 +29,15 @@ read_versions() {
   while IFS='=' read -r key value; do
     [[ -z "$key" || "$key" == \#* ]] && continue
     case "$key" in
-      KIT_VERSION|BASE_IMAGE|CODEX_VERSION|CODEX_PACKAGE_INTEGRITY|CODEX_LINUX_X64_INTEGRITY|NETWORK_IMAGE|OFFLINE_IMAGE)
+      KIT_VERSION|BASE_IMAGE|CODEX_VERSION|CODEX_PACKAGE_INTEGRITY|CODEX_LINUX_X64_INTEGRITY|NETWORK_IMAGE|OFFLINE_IMAGE|OPENCODE_IMAGE|OPENCODE_VERSION|OPENCODE_PACKAGE_INTEGRITY|OPENCODE_LINUX_X64_INTEGRITY)
         printf -v "$key" '%s' "$value"
         ;;
       *) die "unknown key in versions.lock: $key" ;;
     esac
   done < "$VERSIONS_FILE"
   : "${KIT_VERSION:?}" "${BASE_IMAGE:?}" "${CODEX_VERSION:?}" \
-    "${NETWORK_IMAGE:?}" "${OFFLINE_IMAGE:?}"
+    "${NETWORK_IMAGE:?}" "${OFFLINE_IMAGE:?}" \
+    "${OPENCODE_IMAGE:?}" "${OPENCODE_VERSION:?}"
 }
 
 project_root() {
@@ -55,11 +56,12 @@ load_project() {
   PROJECT_MEMORY='8g'
   PROJECT_NETWORK_IMAGE="$NETWORK_IMAGE"
   PROJECT_OFFLINE_IMAGE="$OFFLINE_IMAGE"
+  PROJECT_OPENCODE_IMAGE="$OPENCODE_IMAGE"
 
   while IFS='=' read -r key value; do
     [[ -z "$key" || "$key" == \#* ]] && continue
     case "$key" in
-      PROJECT_SLUG|PROJECT_CPUS|PROJECT_MEMORY|PROJECT_NETWORK_IMAGE|PROJECT_OFFLINE_IMAGE)
+      PROJECT_SLUG|PROJECT_CPUS|PROJECT_MEMORY|PROJECT_NETWORK_IMAGE|PROJECT_OFFLINE_IMAGE|PROJECT_OPENCODE_IMAGE)
         printf -v "$key" '%s' "$value"
         ;;
       *) die "unknown key in $PROJECT_CONFIG: $key" ;;
@@ -126,6 +128,28 @@ ensure_images() {
     || die "network image Codex binary integrity label is invalid"
 }
 
+ensure_opencode_image() {
+  docker image inspect "$PROJECT_OPENCODE_IMAGE" >/dev/null 2>&1 \
+    || die "OpenCode image is missing; run sandboxctl build"
+
+  local kit version package_integrity binary_integrity mode base
+  kit="$(docker image inspect --format '{{index .Config.Labels "io.codex-sandbox.kit.version"}}' "$PROJECT_OPENCODE_IMAGE")"
+  version="$(docker image inspect --format '{{index .Config.Labels "io.codex-sandbox.opencode.version"}}' "$PROJECT_OPENCODE_IMAGE")"
+  package_integrity="$(docker image inspect --format '{{index .Config.Labels "io.codex-sandbox.opencode.package-integrity"}}' "$PROJECT_OPENCODE_IMAGE")"
+  binary_integrity="$(docker image inspect --format '{{index .Config.Labels "io.codex-sandbox.opencode.linux-x64-integrity"}}' "$PROJECT_OPENCODE_IMAGE")"
+  mode="$(docker image inspect --format '{{index .Config.Labels "io.codex-sandbox.mode"}}' "$PROJECT_OPENCODE_IMAGE")"
+  base="$(docker image inspect --format '{{index .Config.Labels "io.codex-sandbox.base.image"}}' "$PROJECT_OPENCODE_IMAGE")"
+
+  [[ "$kit" == "$KIT_VERSION" ]] || die "OpenCode image kit version does not match versions.lock"
+  [[ "$version" == "$OPENCODE_VERSION" ]] || die "OpenCode image version is invalid"
+  [[ "$package_integrity" == "$OPENCODE_PACKAGE_INTEGRITY" ]] \
+    || die "OpenCode image package integrity label is invalid"
+  [[ "$binary_integrity" == "$OPENCODE_LINUX_X64_INTEGRITY" ]] \
+    || die "OpenCode image binary integrity label is invalid"
+  [[ "$mode" == 'networked-public' ]] || die "OpenCode image mode label is invalid"
+  [[ "$base" == "$BASE_IMAGE" ]] || die "OpenCode image base digest does not match versions.lock"
+}
+
 auth_volume_name() {
   printf 'codex-sbx-%s-auth-v2' "$PROJECT_SLUG"
 }
@@ -146,6 +170,32 @@ ensure_auth_volume() {
     kit="$(docker volume inspect --format '{{index .Labels "io.codex-sandbox.kit.version"}}' "$volume")"
     [[ "$managed" == 'true' && "$project" == "$PROJECT_SLUG" && "$kit" == "$KIT_VERSION" ]] \
       || die "existing auth volume labels do not match this project and kit"
+  fi
+}
+
+opencode_auth_volume_name() {
+  printf 'codex-sbx-%s-opencode-auth-v2' "$PROJECT_SLUG"
+}
+
+ensure_opencode_auth_volume() {
+  local volume
+  volume="$(opencode_auth_volume_name)"
+  if ! docker volume inspect "$volume" >/dev/null 2>&1; then
+    docker volume create \
+      --label io.codex-sandbox.managed=true \
+      --label io.codex-sandbox.agent=opencode \
+      --label "io.codex-sandbox.project=${PROJECT_SLUG}" \
+      --label "io.codex-sandbox.kit.version=${KIT_VERSION}" \
+      "$volume" >/dev/null
+  else
+    local managed agent project kit
+    managed="$(docker volume inspect --format '{{index .Labels "io.codex-sandbox.managed"}}' "$volume")"
+    agent="$(docker volume inspect --format '{{index .Labels "io.codex-sandbox.agent"}}' "$volume")"
+    project="$(docker volume inspect --format '{{index .Labels "io.codex-sandbox.project"}}' "$volume")"
+    kit="$(docker volume inspect --format '{{index .Labels "io.codex-sandbox.kit.version"}}' "$volume")"
+    [[ "$managed" == 'true' && "$agent" == 'opencode' && "$project" == "$PROJECT_SLUG" && "$kit" == "$KIT_VERSION" ]] \
+      || die "existing OpenCode auth volume labels do not match this project and kit"
+    [[ "$agent" == 'opencode' ]] || die "existing auth volume is not labeled for OpenCode"
   fi
 }
 
@@ -275,6 +325,12 @@ run_created_container() {
   fi
   docker inspect --format 'Container exit code: {{.State.ExitCode}}' "$container_id" || true
   cleanup_container
+  # Release the same-project session lock here because this function's trap
+  # registration replaced the one installed by acquire_session_lock. The
+  # release function is idempotent.
+  if declare -F release_session_lock_on_exit >/dev/null; then
+    release_session_lock_on_exit
+  fi
   trap - EXIT INT TERM
   return "$exit_code"
 }
@@ -392,6 +448,217 @@ create_login_container() {
   printf '%s' "$container_id"
 }
 
+SESSION_LOCK_DIR_NAME='.session-lock'
+
+session_lock_dir() {
+  printf '%s/%s' "$CONTROL_DIR" "$SESSION_LOCK_DIR_NAME"
+}
+
+# One session per project across both agents: Codex and OpenCode task
+# commands share this lock so they can never run against the same working
+# tree at the same time.
+acquire_session_lock() {
+  local agent="$1"
+  local lock_dir
+  lock_dir="$(session_lock_dir)"
+  if mkdir "$lock_dir" 2>/dev/null; then
+    printf 'agent=%s\npid=%s\nstarted=%s\n' \
+      "$agent" "$$" "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" > "${lock_dir}/owner.txt"
+    SESSION_LOCK_RELEASED=0
+    release_session_lock_on_exit() {
+      [[ "$SESSION_LOCK_RELEASED" == '1' ]] && return 0
+      SESSION_LOCK_RELEASED=1
+      local lock_dir
+      lock_dir="$(session_lock_dir)"
+      rm -f "${lock_dir}/owner.txt"
+      rmdir "$lock_dir" 2>/dev/null || true
+    }
+    trap release_session_lock_on_exit EXIT INT TERM
+    return 0
+  fi
+
+  local owner pid
+  owner="$(cat "${lock_dir}/owner.txt" 2>/dev/null || true)"
+  pid="$(printf '%s' "$owner" | sed -n 's/^pid=//p' | head -n1)"
+  if [[ -n "$pid" ]] && ! kill -0 "$pid" 2>/dev/null; then
+    note "Removing stale session lock from a finished process (pid ${pid})."
+    rm -f "${lock_dir}/owner.txt"
+    rmdir "$lock_dir" 2>/dev/null || true
+    acquire_session_lock "$agent"
+    return
+  fi
+  die "a session is already active for project '${PROJECT_SLUG}' (${owner:-unknown owner}); simultaneous Codex and OpenCode sessions for the same slug are not allowed"
+}
+
+# Remove leftover OpenCode task/login containers from a previous invocation,
+# including after a forced (SIGKILL) termination of the launcher. When the
+# same-slug lock is held ("all"), every matching container is stale. Otherwise
+# only non-running containers are targeted so a live session is never touched.
+# Race-tolerant but fail closed: removal attempts are best-effort, then the
+# container list is re-queried; any matching container that should have been
+# removed and still exists makes this function return nonzero so no new
+# session can start on top of stale state.
+remove_stale_opencode_containers() {
+  local scope="$1" id state
+  local ids
+  ids="$(docker ps -aq --filter "name=^codex-sbx-${PROJECT_SLUG}-opencode")"
+  [[ -z "$ids" ]] && return 0
+  for id in $ids; do
+    state="$(docker inspect --format '{{.State.Status}}' "$id" 2>/dev/null || true)"
+    if [[ "$scope" == 'all' || "${state:-unknown}" != 'running' ]]; then
+      docker rm -f "$id" >/dev/null 2>&1 || true
+    fi
+  done
+  ids="$(docker ps -aq --filter "name=^codex-sbx-${PROJECT_SLUG}-opencode")"
+  if [[ -n "$ids" ]]; then
+    for id in $ids; do
+      state="$(docker inspect --format '{{.State.Status}}' "$id" 2>/dev/null || echo unknown)"
+      if [[ "$scope" == 'all' || "$state" != 'running' ]]; then
+        printf 'ERROR: stale OpenCode container %s (state: %s) could not be removed for project %s; refusing to start a new session\n' \
+          "$id" "$state" "$PROJECT_SLUG" >&2
+        return 1
+      fi
+    done
+  fi
+  return 0
+}
+
+# Ensure the authentication volume contains at most the single minimum
+# credential file. Deletion, verification, and chmod run inside the container
+# through the root-owned prune script (set -euo pipefail with an explicit
+# postcondition check); any failure propagates to the caller, which treats it
+# as fatal rather than silently continuing.
+prune_opencode_auth_volume() {
+  local volume
+  volume="$(opencode_auth_volume_name)"
+  docker volume inspect "$volume" >/dev/null 2>&1 || return 0
+  docker run --rm --network none --read-only --cap-drop ALL \
+    --security-opt no-new-privileges:true --pids-limit 64 --memory 256m \
+    --user node \
+    --mount "type=volume,source=${volume},target=/auth" \
+    --entrypoint /bin/bash "$PROJECT_OPENCODE_IMAGE" \
+    /usr/local/lib/codex-sandbox/prune-auth-volume /auth \
+    >/dev/null
+}
+
+prepare_opencode_session() {
+  remove_stale_opencode_containers all
+  prune_opencode_auth_volume
+}
+
+prepare_opencode_auth_command() {
+  remove_stale_opencode_containers finished
+  prune_opencode_auth_volume
+}
+
+# Runs the post-command prune and reports failure loudly. Sets RUN_PRUNE_FAILED
+# so callers can convert it into a visible nonzero exit status while still
+# preserving an original container failure status.
+RUN_PRUNE_FAILED=0
+finish_opencode() {
+  RUN_PRUNE_FAILED=0
+  if ! prune_opencode_auth_volume; then
+    RUN_PRUNE_FAILED=1
+    printf 'ERROR: authentication-volume prune failed for project %s; the auth volume may contain unexpected files. Inspect it or run: sandboxctl destroy-opencode-auth %s --yes\n' \
+      "$PROJECT_SLUG" "$PROJECT_SLUG" >&2
+    return 1
+  fi
+  return 0
+}
+
+create_opencode_container() {
+  local interactive="$1"
+  shift
+  load_protected_mounts
+  ensure_opencode_auth_volume
+  set_common_args
+  local stamp name volume container_id tty_args=()
+  stamp="$(date -u +'%Y%m%dT%H%M%SZ')"
+  name="codex-sbx-${PROJECT_SLUG}-opencode-${stamp}-$$"
+  volume="$(opencode_auth_volume_name)"
+  [[ "$interactive" == 'true' ]] && tty_args=(-it)
+
+  local shadow_args=() tmpfs_expected='/home/node/.cache,/home/node/.config,/home/node/.local/share/opencode,/home/node/.local/state,/tmp'
+  if [[ -d "$REPO_DIR/.opencode" ]]; then
+    # Shadow the repository's executable extension surface with an empty,
+    # disposable tmpfs so project plugins/commands/agents can never load.
+    shadow_args=(--tmpfs /workspace/.opencode:rw,nosuid,nodev,size=65536,uid=1000,gid=1000,mode=0700)
+    tmpfs_expected="${tmpfs_expected},/workspace/.opencode"
+  fi
+
+  container_id="$(docker create "${tty_args[@]}" \
+    --name "$name" \
+    "${container_common_args[@]}" \
+    --network bridge \
+    --workdir /workspace \
+    --env AGENT_MODE=networked-public \
+    --env OPENCODE_DISABLE_PROJECT_CONFIG=1 \
+    --mount "type=bind,source=${REPO_DIR},target=/workspace" \
+    --mount "type=bind,source=${REPO_DIR}/.git,target=/workspace/.git,readonly" \
+    --mount "type=bind,source=${OUTBOX_DIR},target=/agent/outbox" \
+    --mount "type=bind,source=${SCRATCH_DIR},target=/agent/scratch" \
+    --mount "type=volume,source=${volume},target=/auth,readonly" \
+    --tmpfs /home/node/.local/share/opencode:rw,nosuid,nodev,size=536870912,uid=1000,gid=1000,mode=0700 \
+    --tmpfs /home/node/.config:rw,nosuid,nodev,size=16777216,uid=1000,gid=1000,mode=0700 \
+    --tmpfs /home/node/.local/state:rw,nosuid,nodev,size=536870912,uid=1000,gid=1000,mode=0700 \
+    "${shadow_args[@]}" \
+    "${protected_mount_args[@]}" \
+    --entrypoint /usr/local/bin/start-opencode-session \
+    "$PROJECT_OPENCODE_IMAGE" "$@")"
+
+  local expected=(
+    '/workspace|bind|true'
+    '/workspace/.git|bind|false'
+    '/agent/outbox|bind|true'
+    '/agent/scratch|bind|true'
+    '/auth|volume|false'
+    "${protected_expected[@]}"
+  )
+  if ! verify_container "$container_id" bridge "$tmpfs_expected" "${expected[@]}"; then
+    docker rm -f "$container_id" >/dev/null 2>&1 || true
+    return 1
+  fi
+  write_host_report "$container_id" opencode-networked "$stamp"
+  printf '%s' "$container_id"
+}
+
+create_opencode_login_container() {
+  local interactive="$1"
+  shift
+  ensure_opencode_auth_volume
+  set_common_args
+  local stamp name volume container_id tty_args=()
+  stamp="$(date -u +'%Y%m%dT%H%M%SZ')"
+  name="codex-sbx-${PROJECT_SLUG}-opencode-login-${stamp}-$$"
+  volume="$(opencode_auth_volume_name)"
+  [[ "$interactive" == 'true' ]] && tty_args=(-it)
+
+  container_id="$(docker create "${tty_args[@]}" \
+    --name "$name" \
+    "${container_common_args[@]}" \
+    --network bridge \
+    --workdir /home/node \
+    --env AGENT_MODE=networked-public \
+    --env OPENCODE_DISABLE_PROJECT_CONFIG=1 \
+    --mount "type=volume,source=${volume},target=/auth" \
+    --tmpfs /home/node/.local/share/opencode:rw,nosuid,nodev,size=536870912,uid=1000,gid=1000,mode=0700 \
+    --tmpfs /home/node/.config:rw,nosuid,nodev,size=16777216,uid=1000,gid=1000,mode=0700 \
+    --tmpfs /home/node/.local/state:rw,nosuid,nodev,size=536870912,uid=1000,gid=1000,mode=0700 \
+    --entrypoint /usr/local/bin/start-opencode-auth-session \
+    "$PROJECT_OPENCODE_IMAGE" "$@")"
+
+  local expected=(
+    '/auth|volume|true'
+  )
+  if ! verify_container "$container_id" bridge \
+      '/home/node/.cache,/home/node/.config,/home/node/.local/share/opencode,/home/node/.local/state,/tmp' "${expected[@]}"; then
+    docker rm -f "$container_id" >/dev/null 2>&1 || true
+    return 1
+  fi
+  write_host_report "$container_id" opencode-login "$stamp"
+  printf '%s' "$container_id"
+}
+
 cmd_init() {
   local slug="${1:-}"
   [[ -n "$slug" ]] || die "usage: sandboxctl init <slug>"
@@ -406,6 +673,7 @@ cmd_init() {
     printf 'PROJECT_MEMORY=8g\n'
     printf 'PROJECT_NETWORK_IMAGE=%s\n' "$NETWORK_IMAGE"
     printf 'PROJECT_OFFLINE_IMAGE=%s\n' "$OFFLINE_IMAGE"
+    printf 'PROJECT_OPENCODE_IMAGE=%s\n' "$OPENCODE_IMAGE"
   } > "$root/control/project.env"
   {
     printf '# One repository-relative path per line. Existing paths are mounted read-only.\n'
@@ -437,6 +705,17 @@ cmd_build() {
     --build-arg "KIT_VERSION=$KIT_VERSION" \
     -f "$KIT_ROOT/images/offline.Dockerfile" \
     -t "$OFFLINE_IMAGE" "$KIT_ROOT"
+  note "Building pinned OpenCode image: $OPENCODE_IMAGE"
+  docker build \
+    --build-arg "BASE_IMAGE=$BASE_IMAGE" \
+    --build-arg "KIT_VERSION=$KIT_VERSION" \
+    --build-arg "OPENCODE_VERSION=$OPENCODE_VERSION" \
+    --build-arg "OPENCODE_PACKAGE_INTEGRITY=$OPENCODE_PACKAGE_INTEGRITY" \
+    --build-arg "OPENCODE_LINUX_X64_INTEGRITY=$OPENCODE_LINUX_X64_INTEGRITY" \
+    --label "io.codex-sandbox.opencode.package-integrity=$OPENCODE_PACKAGE_INTEGRITY" \
+    --label "io.codex-sandbox.opencode.linux-x64-integrity=$OPENCODE_LINUX_X64_INTEGRITY" \
+    -f "$KIT_ROOT/images/opencode.Dockerfile" \
+    -t "$OPENCODE_IMAGE" "$KIT_ROOT"
 }
 
 cmd_doctor() {
@@ -464,6 +743,7 @@ cmd_run() {
   load_project "$slug"
   ensure_project_layout
   ensure_images
+  acquire_session_lock codex
   local container_id
   container_id="$(create_networked_container true \
     codex --strict-config --disable apps --disable remote_plugin \
@@ -481,6 +761,7 @@ cmd_exec() {
   load_project "$slug"
   ensure_project_layout
   ensure_images
+  acquire_session_lock codex-exec
   local container_id
   container_id="$(create_networked_container false "$@")"
   run_created_container "$container_id" false
@@ -492,6 +773,7 @@ cmd_shell() {
   load_project "$slug"
   ensure_project_layout
   ensure_images
+  acquire_session_lock codex-shell
   local container_id
   container_id="$(create_networked_container true bash)"
   run_created_container "$container_id" true
@@ -561,6 +843,133 @@ cmd_destroy_auth() {
   note "Removed project authentication volume: $volume"
 }
 
+# Runs an OpenCode task/auth container while guaranteeing that the post-command
+# authentication-volume prune always executes — after success AND failure — and
+# preserves the original command exit status. A failed prune produces a visible
+# nonzero result instead of silent success.
+run_opencode_command() {
+  local create_fn="$1"
+  local interactive="$2"
+  shift 2
+  local exit_code=0 container_id=""
+  container_id="$("$create_fn" "$interactive" "$@")" || exit_code=$?
+  if [[ -n "$container_id" ]]; then
+    run_created_container "$container_id" "$interactive" || exit_code=$?
+  fi
+  if ! finish_opencode; then
+    [[ "$exit_code" -ne 0 ]] || exit_code=1
+  fi
+  return "$exit_code"
+}
+
+cmd_run_opencode() {
+  local slug="${1:-}"
+  [[ -n "$slug" ]] || die "usage: sandboxctl run-opencode <slug> [opencode arguments]"
+  shift
+  load_project "$slug"
+  ensure_project_layout
+  ensure_images
+  ensure_opencode_image
+  acquire_session_lock opencode
+  prepare_opencode_session
+  run_opencode_command create_opencode_container true \
+    opencode --pure "$@"
+}
+
+cmd_shell_opencode() {
+  local slug="${1:-}"
+  [[ -n "$slug" ]] || die "usage: sandboxctl shell-opencode <slug>"
+  load_project "$slug"
+  ensure_project_layout
+  ensure_images
+  ensure_opencode_image
+  acquire_session_lock opencode-shell
+  prepare_opencode_session
+  run_opencode_command create_opencode_container true bash
+}
+
+cmd_exec_opencode() {
+  local slug="${1:-}"
+  [[ -n "$slug" ]] || die "usage: sandboxctl exec-opencode <slug> -- <command>"
+  shift
+  [[ "${1:-}" == '--' ]] || die "usage: sandboxctl exec-opencode <slug> -- <command>"
+  shift
+  [[ "$#" -gt 0 ]] || die "a command is required"
+  load_project "$slug"
+  ensure_project_layout
+  ensure_images
+  ensure_opencode_image
+  acquire_session_lock opencode-exec
+  prepare_opencode_session
+  run_opencode_command create_opencode_container false "$@"
+}
+
+cmd_login_opencode() {
+  local slug="${1:-}"
+  [[ -n "$slug" ]] || die "usage: sandboxctl login-opencode <slug>"
+  load_project "$slug"
+  ensure_project_layout
+  ensure_opencode_image
+  prepare_opencode_auth_command
+  run_opencode_command create_opencode_login_container true \
+    opencode auth login
+}
+
+cmd_auth_status_opencode() {
+  local slug="${1:-}"
+  [[ -n "$slug" ]] || die "usage: sandboxctl auth-status-opencode <slug>"
+  load_project "$slug"
+  ensure_project_layout
+  ensure_opencode_image
+  prepare_opencode_auth_command
+  run_opencode_command create_opencode_login_container false \
+    opencode auth list
+}
+
+cmd_logout_opencode() {
+  local slug="${1:-}"
+  [[ -n "$slug" ]] || die "usage: sandboxctl logout-opencode <slug>"
+  load_project "$slug"
+  ensure_project_layout
+  ensure_opencode_image
+  prepare_opencode_auth_command
+  run_opencode_command create_opencode_login_container true \
+    opencode auth logout
+}
+
+cmd_destroy_opencode_auth() {
+  local slug="${1:-}"
+  local confirmation="${2:-}"
+  [[ -n "$slug" && "$confirmation" == '--yes' ]] \
+    || die "usage: sandboxctl destroy-opencode-auth <slug> --yes"
+  load_project "$slug"
+  local volume
+  volume="$(opencode_auth_volume_name)"
+  docker volume inspect "$volume" >/dev/null 2>&1 || die "OpenCode auth volume does not exist: $volume"
+  docker volume rm "$volume"
+  note "Removed project OpenCode authentication volume: $volume"
+}
+
+cmd_doctor_opencode() {
+  local slug="${1:-}"
+  [[ -n "$slug" ]] || die "usage: sandboxctl doctor-opencode <slug>"
+  require_command docker
+  require_command git
+  docker info >/dev/null
+  load_project "$slug"
+  ensure_project_layout
+  ensure_images
+  ensure_opencode_image
+  load_protected_mounts
+  note "PASS: Docker daemon is available"
+  note "PASS: project layout is complete"
+  note "PASS: normal Git metadata directory exists"
+  note "PASS: pinned v2 images and labels match"
+  note "PASS: pinned OpenCode image, version $OPENCODE_VERSION, and integrity labels match"
+  note "PASS: protected paths are valid"
+  note "RESULT: project doctor passed (opencode)"
+}
+
 cmd_package() {
   local slug="${1:-}"
   [[ -n "$slug" ]] || die "usage: sandboxctl package <slug>"
@@ -599,7 +1008,7 @@ Usage: sandboxctl <command> [arguments]
 
 Commands:
   init <slug>                 Create an isolated project directory layout
-  build                       Build the two pinned v2 images
+  build                       Build the pinned v2 images (Codex, offline, OpenCode)
   doctor <slug>               Validate host, project, and image prerequisites
   login <slug>                Sign in through ChatGPT device authorization
   auth-status <slug>          Check whether the project auth volume is signed in
@@ -610,6 +1019,16 @@ Commands:
   exec <slug> -- <command>    Run a noninteractive command in the networked boundary
   offline <slug> -- <command> Run a command against a fresh offline source copy
   package <slug>              Produce a trusted WSL review bundle
+
+OpenCode commands:
+  doctor-opencode <slug>             Validate prerequisites including the OpenCode image
+  login-opencode <slug>              Authenticate OpenCode without mounting a project
+  auth-status-opencode <slug>        List connected OpenCode providers (no secrets)
+  logout-opencode <slug>             Remove saved OpenCode provider credentials
+  destroy-opencode-auth <slug> --yes Delete the OpenCode project auth volume
+  run-opencode <slug> [args]         Start the interactive OpenCode session
+  shell-opencode <slug>              Start a diagnostic shell in the OpenCode boundary
+  exec-opencode <slug> -- <command>  Run a noninteractive command in the OpenCode boundary
 EOF
 }
 
@@ -631,6 +1050,14 @@ main() {
     exec) cmd_exec "$@" ;;
     offline) cmd_offline "$@" ;;
     package) cmd_package "$@" ;;
+    doctor-opencode) cmd_doctor_opencode "$@" ;;
+    login-opencode) cmd_login_opencode "$@" ;;
+    auth-status-opencode) cmd_auth_status_opencode "$@" ;;
+    logout-opencode) cmd_logout_opencode "$@" ;;
+    destroy-opencode-auth) cmd_destroy_opencode_auth "$@" ;;
+    run-opencode) cmd_run_opencode "$@" ;;
+    shell-opencode) cmd_shell_opencode "$@" ;;
+    exec-opencode) cmd_exec_opencode "$@" ;;
     help|-h|--help) usage ;;
     *) die "unknown command: $command" ;;
   esac
