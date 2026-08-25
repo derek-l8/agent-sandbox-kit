@@ -28,9 +28,11 @@ assert_output() {
 }
 
 for spec in \
-  'codex run run' 'codex login login' 'codex doctor doctor' \
+  'codex run run' 'codex login login' 'codex auth-status auth-status' \
+  'codex logout logout' 'codex doctor doctor' \
   'codex shell shell' 'codex exec exec' \
   'opencode run run-opencode' 'opencode login login-opencode' \
+  'opencode auth-status auth-status-opencode' 'opencode logout logout-opencode' \
   'opencode doctor doctor-opencode' 'opencode shell shell-opencode' \
   'opencode exec exec-opencode'; do
   read -r agent action legacy <<< "$spec"

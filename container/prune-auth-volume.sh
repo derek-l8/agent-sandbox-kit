@@ -17,19 +17,32 @@ if [[ ! -d "$auth_dir" ]]; then
   exit 1
 fi
 
-# Only a regular, non-symlink auth.json is valid persistent state. Remove a
-# malformed allowlisted path just like any other unexpected content.
+# Only a regular, non-symlink, syntactically valid JSON credential is accepted.
 if [[ -e "$auth_dir/auth.json" || -L "$auth_dir/auth.json" ]]; then
   if [[ -f "$auth_dir/auth.json" && ! -L "$auth_dir/auth.json" ]]; then
+    if ! node -e 'JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"))' \
+        "$auth_dir/auth.json" >/dev/null 2>&1; then
+      printf 'ERROR: authentication credential is malformed JSON: %s\n' "$auth_dir/auth.json" >&2
+      exit 1
+    fi
     chmod 0600 "$auth_dir/auth.json"
   else
     rm -rf -- "$auth_dir/auth.json"
+    printf 'ERROR: authentication credential was not a regular file and was removed: %s\n' \
+      "$auth_dir/auth.json" >&2
+    exit 1
   fi
 fi
 
 # Delete every direct child except auth.json. A deletion failure aborts
 # through set -e instead of being reported as success.
+unexpected="$(find "$auth_dir" -mindepth 1 -maxdepth 1 ! -name auth.json -print -quit)"
 find "$auth_dir" -mindepth 1 -maxdepth 1 ! -name auth.json -exec rm -rf -- {} +
+if [[ -n "$unexpected" ]]; then
+  printf 'ERROR: unexpected authentication content was removed; refusing to continue: %s\n' \
+    "$unexpected" >&2
+  exit 1
+fi
 
 # Postcondition: nothing except auth.json may remain.
 unexpected="$(find "$auth_dir" -mindepth 1 -maxdepth 1 ! -name auth.json -print -quit)"

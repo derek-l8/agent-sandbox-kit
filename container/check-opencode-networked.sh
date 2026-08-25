@@ -18,6 +18,19 @@ expect_mount_mode /agent/outbox rw "review outbox is writable"
 expect_mount_mode /agent/scratch rw "public scratch is writable"
 expect_mount_mode /home/node/.local/state rw "disposable XDG state is writable tmpfs"
 expect_mount_mode /home/node/.local/share/opencode rw "ephemeral OpenCode state is writable"
+expect_mount_mode /tmp noexec "general temporary storage is non-executable"
+expect_mount_mode /run/opencode-bun-tmp rw "Bun native-library temporary storage is writable"
+expect_mount_option_absent /run/opencode-bun-tmp noexec "Bun native-library temporary storage is executable"
+expect_mount_mode /run/opencode-bun-tmp nosuid "Bun temporary storage is nosuid"
+expect_mount_mode /run/opencode-bun-tmp nodev "Bun temporary storage is nodev"
+if [[ "${BUN_TMPDIR:-}" == /run/opencode-bun-tmp && -d "$BUN_TMPDIR" && ! -L "$BUN_TMPDIR" \
+      && "$(stat -c '%u:%g:%a' "$BUN_TMPDIR")" == "$(id -u):$(id -g):700" \
+      && "$(findmnt -n -T "$BUN_TMPDIR" -o FSTYPE)" == tmpfs \
+      ]]; then
+  pass "BUN_TMPDIR is a private, user-owned dedicated tmpfs"
+else
+  fail "BUN_TMPDIR is not a private, user-owned dedicated tmpfs"
+fi
 expect_mount_mode /auth ro "project authentication store is mounted read-only in sessions"
 expect_absent /agent/inbox "private inbox is absent"
 

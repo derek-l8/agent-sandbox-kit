@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# Docker-free, model-free launcher boundary tests for the OpenCode adapter.
+# Docker-free, model-free launcher boundary tests for the agent adapters.
 # An instrumented docker stub records every `docker create` invocation so the
 # real command code paths run end to end against a synthetic project, and the
 # recorded container definitions are asserted against:
@@ -32,7 +32,7 @@ slug="boundary-probe"
 ws="$work/workspaces"
 proj="$ws/$slug"
 mkdir -p "$proj"/{repo/.git,inbox,outbox,scratch,control/logs}
-printf 'PROJECT_SLUG=%s\nPROJECT_CPUS=3\nPROJECT_MEMORY=5g\nPROJECT_NETWORK_IMAGE=local/codex-sandbox-networked:2.0.0\nPROJECT_OFFLINE_IMAGE=local/codex-sandbox-offline:2.0.0\n' "$slug" \
+printf 'PROJECT_SLUG=%s\nPROJECT_CPUS=3\nPROJECT_MEMORY=5g\nPROJECT_NETWORK_IMAGE=local/codex-sandbox-networked:2.0.2\nPROJECT_OFFLINE_IMAGE=local/codex-sandbox-offline:2.0.2\n' "$slug" \
   > "$proj/control/project.env"
 touch "$proj/repo/AGENTS.md"
 
@@ -81,12 +81,15 @@ docker() {
       case "${3:-}" in
         '{{.HostConfig.Privileged}}') echo "false" ;;
         '{{.HostConfig.ReadonlyRootfs}}') echo "true" ;;
-        '{{.HostConfig.NetworkMode}}') echo "bridge" ;;
+        '{{.HostConfig.NetworkMode}}')
+          [[ "${MOUNTS_MODE:-task}" == offline ]] && echo none || echo bridge ;;
         '{{json .HostConfig.CapDrop}}') echo '["ALL"]' ;;
         '{{json .HostConfig.SecurityOpt}}') echo '["no-new-privileges:true"]' ;;
         '{{json .HostConfig.Devices}}'|'{{json .HostConfig.PortBindings}}') echo "null" ;;
         *Mounts*)
-          if [[ "${MOUNTS_MODE:-task}" == "login" || "${MOUNTS_MODE:-task}" == "codex-login" ]]; then
+          if [[ "${MOUNTS_MODE:-task}" == offline ]]; then
+            printf '%s\n' '/agent/inbox|bind|false' '/agent/outbox|bind|true' '/source|bind|false'
+          elif [[ "${MOUNTS_MODE:-task}" == "login" || "${MOUNTS_MODE:-task}" == "codex-login" ]]; then
             printf '/auth|volume|true\n'
           elif [[ "${MOUNTS_MODE:-task}" == "codex-status" ]]; then
             printf '/auth|volume|false\n'
@@ -99,11 +102,14 @@ docker() {
               '/workspace/.git|bind|false'
           fi ;;
         *Tmpfs*)
-          if [[ "${MOUNTS_MODE:-task}" == codex-* ]]; then
+          if [[ "${MOUNTS_MODE:-task}" == offline ]]; then
+            printf '%s\n' /home/node/.cache /tmp /workspace
+          elif [[ "${MOUNTS_MODE:-task}" == codex-* ]]; then
             printf '%s\n' /home/node/.cache /home/node/.codex /tmp
           else
             printf '%s\n' /home/node/.cache /home/node/.config \
-              /home/node/.local/share/opencode /home/node/.local/state /tmp
+              /home/node/.local/share/opencode /home/node/.local/state \
+              /run/opencode-bun-tmp /tmp
           fi ;;
         '{{.State.Status}}') echo "exited" ;;
         '{{.State.ExitCode}}') echo "0" ;;
@@ -148,8 +154,10 @@ record_command() {
 }
 
 record_codex_command() {
-  local label="$1" mode="$2"
-  shift 2
+  local label="$1" mode="$2" entrypoint_kind="$3"
+  local image='local/codex-sandbox-networked:2.0.2'
+  shift 3
+  [[ "$entrypoint_kind" == none ]] && image='local/codex-sandbox-offline:2.0.2'
   rm -f "$work/calls.txt"
   local rc=0
   CALLLOG="$work/calls.txt" WS="$ws" LIB="$work/sandboxctl-lib.sh" ROOT="$root" \
@@ -159,6 +167,60 @@ record_codex_command() {
   [[ "$(grep -c '^CREATE ' "$work/calls.txt")" == 1 ]] \
     || fail "$label did not create exactly one container"
   grep '^CREATE ' "$work/calls.txt" | sed 's/^CREATE //; s/ $//' > "$work/create-args.txt"
+  assert_entrypoint_structure "$label" "$entrypoint_kind" \
+    "$image" "$work/create-args.txt" \
+    || fail "$label has an invalid Codex entrypoint structure"
+}
+
+assert_entrypoint_structure() {
+  local label="$1" kind="$2" image="$3" args_file="$4"
+  local expected wrong entrypoint_count=0 entrypoint_index=-1 image_index=-1 i
+  local -a args
+  read -r -a args < "$args_file"
+  case "$kind" in
+    task)
+      expected=/usr/local/bin/start-codex-session
+      wrong=/usr/local/bin/start-codex-auth-session ;;
+    auth)
+      expected=/usr/local/bin/start-codex-auth-session
+      wrong=/usr/local/bin/start-codex-session ;;
+    none)
+      expected=''
+      wrong='' ;;
+    *) printf 'invalid entrypoint test kind: %s\n' "$kind" >&2; return 1 ;;
+  esac
+
+  for ((i = 0; i < ${#args[@]}; i++)); do
+    [[ "${args[i]}" == "$image" ]] && image_index=$i
+    if [[ "${args[i]}" == --entrypoint ]]; then
+      ((entrypoint_count += 1))
+      entrypoint_index=$i
+      [[ $((i + 1)) -lt ${#args[@]} && "${args[i + 1]}" == "$expected" ]] || return 1
+    fi
+  done
+  [[ "$image_index" -ge 0 ]] || return 1
+  if [[ "$kind" == none ]]; then
+    [[ "$entrypoint_count" -eq 0 ]] || return 1
+  else
+    [[ "$entrypoint_count" -eq 1 && "$entrypoint_index" -lt "$image_index" ]] || return 1
+    for ((i = image_index + 1; i < ${#args[@]}; i++)); do
+      [[ "${args[i]}" != /usr/local/bin/start-* && "${args[i]}" != --entrypoint ]] || return 1
+    done
+    for ((i = 0; i < ${#args[@]}; i++)); do
+      [[ "${args[i]}" != "$wrong" ]] || return 1
+    done
+  fi
+  return 0
+}
+
+assert_rejected_entrypoint_mutation() {
+  local label="$1" kind="$2" invocation="$3"
+  printf '%s\n' "$invocation" > "$work/mutated-create-args.txt"
+  if assert_entrypoint_structure "$label" "$kind" \
+      'local/codex-sandbox-networked:2.0.2' "$work/mutated-create-args.txt"; then
+    fail "$label mutation was not rejected"
+  fi
+  printf 'PASS: %s mutation is rejected\n' "$label"
 }
 
 assert_create() {
@@ -174,7 +236,7 @@ assert_create() {
   printf 'PASS: %s\n' "$label"
 }
 
-opencode_image="local/codex-sandbox-opencode:2.0.0"
+opencode_image="local/codex-sandbox-opencode:2.0.2"
 
 # --- Task session: run-opencode -------------------------------------------
 record_command "run-opencode" task cmd_run_opencode "$slug"
@@ -197,6 +259,10 @@ assert_create "\.ssh" "no SSH material is mounted" absent
 assert_create "target=$HOME" "no WSL home directory is mounted" absent
 assert_create "inbox" "private inbox is never mounted in task sessions" absent
 assert_create "OPENCODE_DISABLE_PROJECT_CONFIG=1" "project config override is disabled"
+assert_create "BUN_TMPDIR=/run/opencode-bun-tmp" "task session directs Bun extraction to dedicated tmpfs"
+assert_create 'tmpfs /tmp:rw,nosuid,nodev,noexec,' "general /tmp remains noexec"
+assert_create 'tmpfs /run/opencode-bun-tmp:rw,nosuid,nodev,exec,size=67108864,uid=1000,gid=1000,mode=0700' \
+  "task session has narrowly sized private executable Bun tmpfs"
 assert_create "--entrypoint /usr/local/bin/start-opencode-session $opencode_image opencode --pure" \
   "task session replaces the image entrypoint once and runs opencode --pure"
 assert_create "start-opencode-auth-session" \
@@ -234,6 +300,9 @@ assert_create "target=/workspace" "login container never mounts the project work
 assert_create "--entrypoint /usr/local/bin/start-opencode-auth-session $opencode_image opencode auth login" \
   "login container runs opencode auth login"
 assert_create "OPENCODE_DISABLE_PROJECT_CONFIG=1" "login container disables project config"
+assert_create "BUN_TMPDIR=/run/opencode-bun-tmp" "login container directs Bun extraction to dedicated tmpfs"
+assert_create 'tmpfs /run/opencode-bun-tmp:rw,nosuid,nodev,exec,size=67108864,uid=1000,gid=1000,mode=0700' \
+  "login container has private executable Bun tmpfs"
 assert_create "--entrypoint /usr/local/bin/start-opencode-session" \
   "login container never selects the task-session entrypoint" absent
 
@@ -246,7 +315,11 @@ assert_create "--entrypoint /usr/local/bin/start-opencode-auth-session $opencode
   "auth-status container lists providers"
 
 # --- Codex task family: auth read-only --------------------------------------
-record_codex_command "run" codex-task cmd_run "$slug"
+record_codex_command "run" codex-task task cmd_run "$slug"
+assert_create "BUN_TMPDIR" "Codex task does not receive OpenCode Bun tmpdir" absent
+assert_create "/run/opencode-bun-tmp" "Codex task does not receive executable OpenCode tmpfs" absent
+assert_create "--entrypoint /usr/local/bin/start-codex-session local/codex-sandbox-networked:2.0.2 codex --strict-config --disable apps --disable remote_plugin --dangerously-bypass-approvals-and-sandbox" \
+  "Codex run explicitly bypasses the inner Linux sandbox inside Docker"
 assert_create "type=volume,source=codex-sbx-${slug}-auth-v2,target=/auth,readonly" \
   "Codex run mounts authentication read-only"
 assert_create "type=bind,source=$proj/repo,target=/workspace" \
@@ -255,37 +328,57 @@ assert_create "type=bind,source=$proj/repo/.git,target=/workspace/.git,readonly"
   "Codex run keeps Git metadata read-only"
 assert_create "target=/agent/inbox" "Codex run excludes the private inbox" absent
 
-record_codex_command "shell" codex-task cmd_shell "$slug"
+record_codex_command "shell" codex-task task cmd_shell "$slug"
 assert_create "target=/auth,readonly" "Codex shell keeps authentication read-only"
-assert_create "start-networked-session bash" "Codex shell forwards bash"
+assert_create "--entrypoint /usr/local/bin/start-codex-session local/codex-sandbox-networked:2.0.2 bash" "Codex shell forwards bash"
 
-record_codex_command "exec" codex-task cmd_exec "$slug" -- git status
+record_codex_command "exec" codex-task task cmd_exec "$slug" -- git status
 assert_create "target=/auth,readonly" "Codex exec keeps authentication read-only"
-assert_create "start-networked-session git status" "Codex exec forwards the command"
+assert_create "--entrypoint /usr/local/bin/start-codex-session local/codex-sandbox-networked:2.0.2 git status" "Codex exec forwards the command"
 
 # --- Codex authentication family: auth writable, workspace absent -----------
-record_codex_command "login" codex-login cmd_login "$slug"
+record_codex_command "login" codex-login auth cmd_login "$slug"
+assert_create "BUN_TMPDIR" "Codex authentication does not receive OpenCode Bun tmpdir" absent
+assert_create "/run/opencode-bun-tmp" "Codex authentication does not receive executable OpenCode tmpfs" absent
 assert_create "type=volume,source=codex-sbx-${slug}-auth-v2,target=/auth " \
   "Codex login mounts authentication read-write"
 assert_create "target=/auth,readonly" "Codex login never mounts authentication read-only" absent
 assert_create "target=/workspace" "Codex login never mounts the workspace" absent
-assert_create "start-auth-session codex login --device-auth" \
+assert_create "--entrypoint /usr/local/bin/start-codex-auth-session local/codex-sandbox-networked:2.0.2 codex login --device-auth" \
   "Codex login uses the authentication entrypoint"
 
-record_codex_command "auth-status" codex-status cmd_auth_status "$slug"
+record_codex_command "auth-status" codex-status auth cmd_auth_status "$slug"
 assert_create "target=/auth,readonly" \
   "Codex auth-status mounts authentication read-only"
 assert_create "target=/workspace" "Codex auth-status never mounts the workspace" absent
-assert_create "start-auth-session codex login status" \
+assert_create "--entrypoint /usr/local/bin/start-codex-auth-session local/codex-sandbox-networked:2.0.2 codex login status" \
   "Codex auth-status uses the authentication entrypoint"
 
-record_codex_command "logout" codex-login cmd_logout "$slug"
+record_codex_command "logout" codex-login auth cmd_logout "$slug"
 assert_create "type=volume,source=codex-sbx-${slug}-auth-v2,target=/auth " \
   "Codex logout mounts authentication read-write"
 assert_create "target=/auth,readonly" \
   "Codex logout never mounts authentication read-only" absent
-assert_create "start-auth-session codex logout" \
+assert_create "--entrypoint /usr/local/bin/start-codex-auth-session local/codex-sandbox-networked:2.0.2 codex logout" \
   "Codex logout uses the authentication entrypoint"
+
+# --- Offline family: no OpenCode executable temporary storage --------------
+record_codex_command "offline" offline none cmd_offline "$slug" -- true
+assert_create "BUN_TMPDIR" "offline container does not receive OpenCode Bun tmpdir" absent
+assert_create "/run/opencode-bun-tmp" "offline container does not receive executable OpenCode tmpfs" absent
+
+# --- Static negative mutations of Codex entrypoint structure ----------------
+codex_image='local/codex-sandbox-networked:2.0.2'
+assert_rejected_entrypoint_mutation "missing Codex --entrypoint" task \
+  "create --name probe $codex_image codex"
+assert_rejected_entrypoint_mutation "post-image Codex --entrypoint" task \
+  "create --name probe $codex_image --entrypoint /usr/local/bin/start-codex-session codex"
+assert_rejected_entrypoint_mutation "swapped Codex task entrypoint" task \
+  "create --name probe --entrypoint /usr/local/bin/start-codex-auth-session $codex_image codex"
+assert_rejected_entrypoint_mutation "swapped Codex auth entrypoint" auth \
+  "create --name probe --entrypoint /usr/local/bin/start-codex-session $codex_image codex login"
+assert_rejected_entrypoint_mutation "duplicate Codex --entrypoint" task \
+  "create --entrypoint /usr/local/bin/start-codex-session --entrypoint /usr/local/bin/start-codex-session $codex_image codex"
 
 # --- Backward compatibility: legacy project.env without OpenCode keys -------
 legacy_slug="legacy-probe"

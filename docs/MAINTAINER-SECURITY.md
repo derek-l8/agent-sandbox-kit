@@ -107,6 +107,15 @@ Enforced OpenCode-specific boundaries:
 - writable disposable tmpfs locations (`~/.local/share/opencode`,
   `~/.config`, `~/.local/state`) absorb all other state while the root
   filesystem stays read-only;
+- `/tmp` remains `noexec`. OpenCode 1.18.21's OpenTUI dependency uses Bun to
+  extract and map a native shared library, and Bun honors `BUN_TMPDIR` for
+  that extraction. Task and authentication containers therefore receive a
+  separate 64 MiB tmpfs at `/run/opencode-bun-tmp`, owned by the `node` user
+  with mode `0700`, `nosuid`, `nodev`, and `exec`. It is ephemeral and is
+  neither the workspace nor the authentication volume. The deliberate tradeoff
+  is one narrowly scoped executable writable mount inside OpenCode containers;
+  limiting its owner, size, lifetime, and consumers avoids weakening general
+  temporary storage or the Codex/offline boundaries;
 - managed configuration baked root-owned at `/etc/opencode/opencode.json`,
   together with image environment settings, is intended to disable autoupdate,
   sharing, snapshots, MCP servers, external-directory access, project/default
@@ -206,6 +215,23 @@ sandbox because the inner Codex sandbox is intentionally bypassed.
   Linux x64 binary, plus the local OpenCode image tag;
 - the local image tags.
 
+`AUTH_SCHEMA_VERSION` is separate from `KIT_VERSION`. New Codex and OpenCode
+volumes carry managed, project, agent, and authentication-schema labels.
+Narrow legacy v2 volumes from kit 2.0.0 and 2.0.1 are accepted from their
+existing identity labels and volume naming without rewriting credential data;
+the old kit label is informational. Wrong project/agent, missing management,
+or unsupported explicit schema still fails closed with an agent-specific reset
+command. Reset is never automatic.
+
+The generic `NETWORK_IMAGE`, `OFFLINE_IMAGE`, `PROJECT_NETWORK_IMAGE`, and
+`PROJECT_OFFLINE_IMAGE` keys, the `local/codex-sandbox-*` image tags,
+`io.codex-sandbox.*` labels, and `codex-sbx-*` volume/container prefixes are
+persisted compatibility identifiers from earlier releases. They are
+deliberately unchanged in 2.0.2 because renaming them without an automatic,
+tested migration would strand project configuration, images, volumes, or
+cleanup discovery. New implementation files and functions use explicit agent
+names; these persisted identifiers are not a naming template for new agents.
+
 Do not use `latest`, floating base tags without digests, or automatic agent
 updates. Upgrades are deliberate maintenance events:
 
@@ -216,7 +242,7 @@ updates. Upgrades are deliberate maintenance events:
 4. Change `versions.lock` in one reviewable commit.
 5. Run `tests/static.sh`.
 6. Rebuild all images.
-7. Run `tests/smoke.sh` and `tests/smoke-opencode.sh` without invoking a
+7. Run `tests/smoke-codex.sh` and `tests/smoke-opencode.sh` without invoking a
    model.
 8. Authenticate a disposable project and run one tightly bounded model task
    only when a real end-to-end validation is justified.
@@ -260,10 +286,9 @@ unexpected container behavior:
 1. Stop and remove the task container.
 2. Preserve the trusted host-side boundary report.
 3. Review the repository and outbox from trusted WSL.
-4. Run `bin/sandboxctl logout <slug>` (and
-   `bin/sandboxctl logout-opencode <slug>`) when possible.
-5. Run `bin/sandboxctl destroy-auth <slug> --yes` (and
-   `bin/sandboxctl destroy-opencode-auth <slug> --yes`).
+4. Run `sbx codex logout <slug>` and `sbx opencode logout <slug>` when possible.
+5. Run `sbx codex reset-auth <slug> --yes` and
+   `sbx opencode reset-auth <slug> --yes`.
 6. Discard disposable cache and task output.
 7. Rebuild the pinned images if image integrity is in doubt.
 8. Reauthenticate only after the cause is understood.

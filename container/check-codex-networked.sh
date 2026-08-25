@@ -38,4 +38,4 @@ else
   fail "Codex CLI is absent"
 fi
 
-finish_boundary_check networked
+finish_boundary_check codex-networked

@@ -18,6 +18,8 @@
 #   - a hostile repository opencode.json sentinel is absent because
 #     OPENCODE_DISABLE_PROJECT_CONFIG=1 is active;
 #   - a repository .opencode directory is shadowed when present.
+#   - the real pinned OpenCode TUI initializes under a PTY and Bun extracts its
+#     native OpenTUI library under the dedicated executable tmpfs.
 #
 # No model invocation, provider credential, external prompt, or authentication
 # is used. Every probe is fail-closed: missing, malformed, or inconclusive
@@ -42,15 +44,13 @@ failclosed() {
 }
 
 cleanup() {
-  local ids
-  ids="$(docker ps -aq --filter "name=^codex-sbx-${slug}-opencode" 2>/dev/null || true)"
-  if [[ -n "$ids" ]]; then
-    # shellcheck disable=SC2086
-    docker rm -f $ids >/dev/null 2>&1 || true
-  fi
-  "$ctl" destroy-opencode-auth "$slug" --yes >/dev/null 2>&1 || true
-  chmod -R u+w "$ws" 2>/dev/null || true
-  rm -rf "$ws"
+  local id volume="codex-sbx-${slug}-opencode-auth-v2"
+  while IFS= read -r id; do
+    [[ -n "$id" ]] && docker rm -f "$id" >/dev/null 2>&1 || true
+  done < <(docker ps -aq --filter "label=io.codex-sandbox.project=$slug" 2>/dev/null || true)
+  docker volume rm "$volume" >/dev/null 2>&1 || true
+  case "$proj" in "$ws"/opencode-smoke-*) chmod -R u+w "$proj" 2>/dev/null || true; rm -rf -- "$proj" ;; esac
+  rmdir "$ws" 2>/dev/null || true
 }
 trap cleanup EXIT INT TERM
 
@@ -94,9 +94,7 @@ pass "pinned image $IMAGE matches every versions.lock value"
 
 # --- Synthetic disposable project -------------------------------------------
 "$ctl" init "$slug" >/dev/null
-git -C "$proj/repo" init -q
-git -C "$proj/repo" -c user.name='OpenCode Smoke' -c user.email='opencode-smoke@local.invalid' \
-  commit --allow-empty -q -m 'smoke-test baseline'
+mkdir -p "$proj/repo/.git"
 
 # Hostile repository configuration and plugin markers: both MUST be inert.
 printf '%s\n' '{ "autoupdate": true, "share": "enabled", "HOSTILE-PROJECT-CONFIG-SENTINEL": true }' \
@@ -154,6 +152,13 @@ findmnt -n -T /home/node/.config >/dev/null
 findmnt -n -T /home/node/.local/state >/dev/null
 mountpoint -q /tmp
 mountpoint -q /home/node/.cache
+test "${BUN_TMPDIR:-}" = /run/opencode-bun-tmp
+test "$(stat -c "%u:%g:%a" "$BUN_TMPDIR")" = "$(id -u):$(id -g):700"
+findmnt -n -T /tmp -o OPTIONS | grep -qE "(^|,)noexec(,|\$)"
+findmnt -n -T "$BUN_TMPDIR" -o FSTYPE | grep -qx tmpfs
+! findmnt -n -T "$BUN_TMPDIR" -o OPTIONS | grep -qE "(^|,)noexec(,|\$)"
+findmnt -n -T "$BUN_TMPDIR" -o OPTIONS | grep -qE "(^|,)nosuid(,|\$)"
+findmnt -n -T "$BUN_TMPDIR" -o OPTIONS | grep -qE "(^|,)nodev(,|\$)"
 
 # Security context.
 awk "/^CapEff:/{exit (\$2 ~ /^0+\$/ ? 0 : 1)}" /proc/self/status
@@ -199,6 +204,40 @@ assert_report "$task_report" "false"
 grep -q '^  /workspace | bind | writable=true$' "$task_report" \
   || failclosed "task report does not show the writable workspace mount"
 pass "host-side task report confirms the launcher security policy"
+
+# --- Real TUI startup under a PTY (no provider, prompt, or model) -----------
+tui_probe='
+set -euo pipefail
+out=/agent/outbox
+: >"$out/opencode-tui-libraries.txt"
+(
+  while :; do
+    find "$BUN_TMPDIR" -maxdepth 2 -type f -name "*.so" -print \
+      >>"$out/opencode-tui-libraries.txt" 2>/dev/null || true
+    sleep 0.01
+  done
+) &
+monitor=$!
+set +e
+TERM=xterm-256color timeout --signal=TERM 10s script -qefc "opencode --pure" \
+  "$out/opencode-tui-output.txt" </dev/null
+rc=$?
+set -e
+kill "$monitor" 2>/dev/null || true
+wait "$monitor" 2>/dev/null || true
+if grep -q "Failed to initialize OpenTUI render library" "$out/opencode-tui-output.txt"; then
+  exit 21
+fi
+case "$rc" in 0|124|143) ;; *) exit "$rc" ;; esac
+sort -u "$out/opencode-tui-libraries.txt" -o "$out/opencode-tui-libraries.txt"
+grep -q "^/run/opencode-bun-tmp/.*\\.so$" "$out/opencode-tui-libraries.txt"
+'
+"${ctl}" exec-opencode "$slug" -- bash -c "$tui_probe" >/dev/null
+! grep -q 'Failed to initialize OpenTUI render library' "$proj/outbox/opencode-tui-output.txt" \
+  || failclosed "real pinned OpenCode TUI failed to initialize OpenTUI"
+grep -q '^/run/opencode-bun-tmp/.*\.so$' "$proj/outbox/opencode-tui-libraries.txt" \
+  || failclosed "OpenTUI native library was not observed in the dedicated Bun tmpfs"
+pass "real pinned OpenCode TUI initialized under a PTY and extracted OpenTUI in BUN_TMPDIR"
 
 # --- Managed configuration resolution ---------------------------------------
 config_probe='

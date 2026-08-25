@@ -20,7 +20,7 @@ RUN chmod 0555 /usr/local/lib/codex-sandbox/check-common.sh \
     && rm -f /etc/sudoers.d/node \
     && ! command -v codex
 
-LABEL org.opencontainers.image.title="Codex Sandbox Offline Runner" \
+LABEL org.opencontainers.image.title="Agent Sandbox Offline Runner" \
       io.codex-sandbox.kit.version="${KIT_VERSION}" \
       io.codex-sandbox.base.image="${BASE_IMAGE}" \
       io.codex-sandbox.mode="offline-private-test"

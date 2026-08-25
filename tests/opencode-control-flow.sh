@@ -111,7 +111,8 @@ docker() {
             '/workspace/.git|bind|false' ;;
         *Tmpfs*)
           printf '%s\n' /home/node/.cache /home/node/.config \
-            /home/node/.local/share/opencode /home/node/.local/state /tmp ;;
+            /home/node/.local/share/opencode /home/node/.local/state \
+            /run/opencode-bun-tmp /tmp ;;
         '{{.State.Status}}') echo "exited" ;;
         '{{.State.ExitCode}}') echo "${START_RC:-0}" ;;
         *) echo "stub" ;;

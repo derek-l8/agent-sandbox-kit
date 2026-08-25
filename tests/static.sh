@@ -22,15 +22,19 @@ run_suite() {
 }
 
 run_suite prune-script.sh
-run_suite command-reachability.sh
-run_suite control-flow.sh
+run_suite opencode-command-reachability.sh
+run_suite opencode-control-flow.sh
 run_suite codex-auth-control-flow.sh
 run_suite launcher-boundaries.sh
 run_suite adapter-conformance.sh
 run_suite sbx-cli.sh
 run_suite install.sh
+run_suite upgrade.sh
+run_suite auth-compatibility.sh
+run_suite diagnostics.sh
+run_suite smoke-safety.sh
 
-python3 - <<'PY' "$root/config/config.toml" "$root/config/requirements.toml"
+python3 - <<'PY' "$root/config/codex-config.toml" "$root/config/codex-requirements.toml"
 import sys
 import tomllib
 for path in sys.argv[1:]:
@@ -80,12 +84,12 @@ grep -Eq '^OPENCODE_LINUX_X64_INTEGRITY=sha512-[A-Za-z0-9+/]+={0,2}$' "$root/ver
 # Both agent images must contain the root-owned fail-closed authentication
 # pruner. Codex task wrappers must never try to synchronize through a
 # read-only /auth mount.
-for dockerfile in networked.Dockerfile opencode.Dockerfile; do
+for dockerfile in codex-networked.Dockerfile opencode.Dockerfile; do
   grep -qF 'COPY container/prune-auth-volume.sh /usr/local/lib/codex-sandbox/prune-auth-volume' \
     "$root/images/$dockerfile" \
     || fail "$dockerfile does not include the authentication-volume pruner"
 done
-grep -qF '[[ -w /auth ]] || return 0' "$root/container/run-with-project-auth.sh" \
+grep -qF '[[ -w /auth ]] || return 0' "$root/container/run-with-codex-auth.sh" \
   || fail "Codex auth wrapper does not skip synchronization for read-only task mounts"
 
 # The pinned OpenCode image verifies both integrity values before installing.
@@ -96,6 +100,39 @@ for token in \
   grep -qF "$token" "$root/images/opencode.Dockerfile" \
     || fail "opencode.Dockerfile is missing required pin element: $token"
 done
+
+# General temporary storage stays non-executable. Only OpenCode task/auth
+# containers receive Bun's private executable extraction tmpfs and BUN_TMPDIR.
+python3 - "$root/bin/sandboxctl" <<'PY'
+import re
+import sys
+
+text = open(sys.argv[1], encoding="utf-8").read()
+logical, pending = [], ""
+for line in text.splitlines():
+    combined = f"{pending} {line.strip()}" if pending else line
+    if combined.rstrip().endswith("\\"):
+        pending = combined.rstrip()[:-1]
+    else:
+        logical.append(combined)
+        pending = ""
+creates = [line for line in logical if re.search(r"\bdocker create\b", line)]
+opencode = [line for line in creates if "PROJECT_OPENCODE_IMAGE" in line]
+other = [line for line in creates if "PROJECT_OPENCODE_IMAGE" not in line]
+tmp = "--tmpfs /tmp:rw,nosuid,nodev,noexec,size=1073741824,mode=1777"
+bun_mount = "--tmpfs /run/opencode-bun-tmp:rw,nosuid,nodev,exec,size=67108864,uid=1000,gid=1000,mode=0700"
+bun_env = "--env BUN_TMPDIR=/run/opencode-bun-tmp"
+common = re.search(r"set_common_args\(\).*?container_common_args=\((.*?)\n  \)", text, re.S)
+if not common or tmp not in " ".join(line.strip() for line in common.group(1).splitlines()):
+    raise SystemExit("shared /tmp tmpfs must remain explicitly noexec")
+if len(opencode) != 2 or any(bun_mount not in line or bun_env not in line for line in opencode):
+    raise SystemExit("every OpenCode task/auth path must receive the exact Bun tmpfs and BUN_TMPDIR")
+if any("BUN_TMPDIR" in line or "/run/opencode-bun-tmp" in line for line in other):
+    raise SystemExit("Codex/offline path receives OpenCode executable temporary storage")
+if any("target=/run/opencode-bun-tmp" in line for line in opencode):
+    raise SystemExit("Bun tmpdir is backed by a volume or bind mount")
+print("PASS: /tmp is noexec; only both OpenCode paths receive the private executable Bun tmpfs")
+PY
 
 # Managed configuration is baked root-owned/read-only, and automatic updates,
 # default plugins, LSP downloads, and project configuration are disabled.
@@ -215,6 +252,40 @@ echo "PASS: no instruction-guard, polling, or kernel-enforcement mechanisms are 
   || fail "stale placeholder found"
 ! grep -RIn --exclude-dir=.git --exclude=static.sh -- '--ignore-user-config\|--ignore-rules' "$root" \
   || fail "unsupported flag found"
+
+# Naming taxonomy: agent implementations are explicit, shared boundary pieces
+# remain neutral, and the pre-2.0.2 generic Codex names may not return.
+[[ ! -e "$root/tests/smoke.sh" ]] \
+  || fail "tests/smoke.sh returned; the Codex smoke test is smoke-codex.sh"
+for required in \
+  tests/smoke-codex.sh images/codex-networked.Dockerfile \
+  config/codex-config.toml config/codex-requirements.toml \
+  container/check-codex-networked.sh \
+  container/check-codex-login.sh container/run-with-codex-auth.sh \
+  container/start-codex-auth-session.sh container/start-codex-session.sh \
+  tests/opencode-control-flow.sh tests/opencode-command-reachability.sh; do
+  [[ -f "$root/$required" ]] || fail "agent-specific file is missing or ambiguously named: $required"
+done
+for obsolete in \
+  images/networked.Dockerfile config/config.toml config/requirements.toml \
+  container/check-networked.sh container/check-login.sh \
+  container/run-with-project-auth.sh container/start-auth-session.sh \
+  container/start-networked-session.sh tests/control-flow.sh \
+  tests/command-reachability.sh; do
+  [[ ! -e "$root/$obsolete" ]] || fail "ambiguous agent-specific filename returned: $obsolete"
+done
+for shared in \
+  images/offline.Dockerfile container/check-common.sh \
+  container/check-offline.sh container/prune-auth-volume.sh \
+  container/start-offline-session.sh tests/smoke-safety.sh; do
+  [[ -f "$root/$shared" ]] || fail "shared component was incorrectly classified as agent-specific: $shared"
+done
+! grep -RInF 'tests/smoke.sh' "$root/README.md" "$root/docs" >/dev/null \
+  || fail "documentation references the old Codex smoke-test name"
+! grep -RInE 'sbx (run|login|auth-status|logout|doctor|shell|exec|reset-auth)([[:space:]`]|$)' \
+  "$root/README.md" "$root/docs" >/dev/null \
+  || fail "agent-specific public command omits the agent"
+echo "PASS: repository naming taxonomy and canonical public commands are explicit"
 
 # The Docker smoke test must take its image tag from versions.lock and must
 # inspect the real auth volume (mounted read-only) during final inspection,
