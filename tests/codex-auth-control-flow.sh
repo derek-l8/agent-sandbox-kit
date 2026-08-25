@@ -16,7 +16,7 @@ set -euo pipefail
 source "$LIB"
 
 count=0
-ensure_auth_volume() {
+ensure_codex_auth_volume() {
   printf 'ensure\n' >> "$CALLLOG"
 }
 prune_codex_auth_volume() {

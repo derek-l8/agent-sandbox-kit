@@ -66,6 +66,15 @@ expect_mount_mode() {
   esac
 }
 
+expect_mount_option_absent() {
+  local path="$1" forbidden="$2" label="$3" options
+  options="$(findmnt -n -T "$path" -o OPTIONS 2>/dev/null || true)"
+  case ",$options," in
+    *,"$forbidden",*) fail "$label" ;;
+    *) pass "$label" ;;
+  esac
+}
+
 check_common_container_boundary() {
   if [[ -e /.dockerenv ]]; then
     pass "running inside Docker"

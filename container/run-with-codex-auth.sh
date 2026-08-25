@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-# Official Codex file-based credential storage uses only
+# Codex-specific authentication wrapper. Official file-based storage uses only
 # $CODEX_HOME/auth.json. Task sessions mount /auth read-only; authentication
 # containers mount it read-write and may synchronize the refreshed credential.
 auth_store=/auth/auth.json

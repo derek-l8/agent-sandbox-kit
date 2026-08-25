@@ -29,13 +29,13 @@ read_versions() {
   while IFS='=' read -r key value; do
     [[ -z "$key" || "$key" == \#* ]] && continue
     case "$key" in
-      KIT_VERSION|BASE_IMAGE|CODEX_VERSION|CODEX_PACKAGE_INTEGRITY|CODEX_LINUX_X64_INTEGRITY|NETWORK_IMAGE|OFFLINE_IMAGE|OPENCODE_IMAGE|OPENCODE_VERSION|OPENCODE_PACKAGE_INTEGRITY|OPENCODE_LINUX_X64_INTEGRITY)
+      KIT_VERSION|AUTH_SCHEMA_VERSION|BASE_IMAGE|CODEX_VERSION|CODEX_PACKAGE_INTEGRITY|CODEX_LINUX_X64_INTEGRITY|NETWORK_IMAGE|OFFLINE_IMAGE|OPENCODE_IMAGE|OPENCODE_VERSION|OPENCODE_PACKAGE_INTEGRITY|OPENCODE_LINUX_X64_INTEGRITY)
         printf -v "$key" '%s' "$value"
         ;;
       *) die "unknown key in versions.lock: $key" ;;
     esac
   done < "$VERSIONS_FILE"
-  : "${KIT_VERSION:?}" "${BASE_IMAGE:?}" "${CODEX_VERSION:?}" \
+  : "${KIT_VERSION:?}" "${AUTH_SCHEMA_VERSION:?}" "${BASE_IMAGE:?}" "${CODEX_VERSION:?}" \
     "${NETWORK_IMAGE:?}" "${OFFLINE_IMAGE:?}" \
     "${OPENCODE_IMAGE:?}" "${OPENCODE_VERSION:?}"
 }
@@ -99,11 +99,11 @@ ensure_project_layout() {
   done
 }
 
-ensure_images() {
+ensure_codex_images() {
   docker image inspect "$PROJECT_NETWORK_IMAGE" >/dev/null 2>&1 \
-    || die "network image is missing; run sandboxctl build"
+    || image_missing "$PROJECT_NETWORK_IMAGE"
   docker image inspect "$PROJECT_OFFLINE_IMAGE" >/dev/null 2>&1 \
-    || die "offline image is missing; run sandboxctl build"
+    || image_missing "$PROJECT_OFFLINE_IMAGE"
 
   local network_kit offline_kit network_mode offline_mode network_codex
   local network_base network_package_integrity network_binary_integrity
@@ -116,21 +116,46 @@ ensure_images() {
   network_package_integrity="$(docker image inspect --format '{{index .Config.Labels "io.codex-sandbox.codex.package-integrity"}}' "$PROJECT_NETWORK_IMAGE")"
   network_binary_integrity="$(docker image inspect --format '{{index .Config.Labels "io.codex-sandbox.codex.linux-x64-integrity"}}' "$PROJECT_NETWORK_IMAGE")"
 
-  [[ "$network_kit" == "$KIT_VERSION" && "$offline_kit" == "$KIT_VERSION" ]] \
-    || die "image kit version does not match versions.lock"
-  [[ "$network_mode" == 'networked-public' && "$offline_mode" == 'offline-private-test' ]] \
-    || die "image mode labels are invalid"
-  [[ "$network_codex" == "$CODEX_VERSION" ]] || die "network image Codex version is invalid"
-  [[ "$network_base" == "$BASE_IMAGE" ]] || die "network image base digest does not match versions.lock"
-  [[ "$network_package_integrity" == "$CODEX_PACKAGE_INTEGRITY" ]] \
-    || die "network image Codex package integrity label is invalid"
-  [[ "$network_binary_integrity" == "$CODEX_LINUX_X64_INTEGRITY" ]] \
-    || die "network image Codex binary integrity label is invalid"
+  check_image_label "$PROJECT_NETWORK_IMAGE" io.codex-sandbox.kit.version "$KIT_VERSION" "$network_kit"
+  check_image_label "$PROJECT_OFFLINE_IMAGE" io.codex-sandbox.kit.version "$KIT_VERSION" "$offline_kit"
+  check_image_label "$PROJECT_NETWORK_IMAGE" io.codex-sandbox.mode networked-public "$network_mode"
+  check_image_label "$PROJECT_OFFLINE_IMAGE" io.codex-sandbox.mode offline-private-test "$offline_mode"
+  check_image_label "$PROJECT_NETWORK_IMAGE" io.codex-sandbox.codex.version "$CODEX_VERSION" "$network_codex"
+  check_image_label "$PROJECT_NETWORK_IMAGE" io.codex-sandbox.base.image "$BASE_IMAGE" "$network_base"
+  check_image_label "$PROJECT_NETWORK_IMAGE" io.codex-sandbox.codex.package-integrity "$CODEX_PACKAGE_INTEGRITY" "$network_package_integrity"
+  check_image_label "$PROJECT_NETWORK_IMAGE" io.codex-sandbox.codex.linux-x64-integrity "$CODEX_LINUX_X64_INTEGRITY" "$network_binary_integrity"
+}
+
+project_images_are_stale() {
+  [[ "${PROJECT_NETWORK_IMAGE:-}" != "$NETWORK_IMAGE" || "${PROJECT_OFFLINE_IMAGE:-}" != "$OFFLINE_IMAGE" || "${PROJECT_OPENCODE_IMAGE:-}" != "$OPENCODE_IMAGE" ]]
+}
+
+image_missing() {
+  local image="$1"
+  printf 'ERROR: image is missing: %s\n' "$image" >&2
+  if project_images_are_stale; then
+    printf 'Project configuration points to an older image tag. Run: sbx upgrade %s\n' "$PROJECT_SLUG" >&2
+  fi
+  printf 'Safe remediation: sbx build\n' >&2
+  return 1
+}
+
+check_image_label() {
+  local image="$1" label="$2" expected="$3" actual="${4:-}"
+  [[ "$actual" == "$expected" ]] && return 0
+  [[ -n "$actual" ]] || actual=missing
+  printf 'ERROR: image label mismatch\nImage: %s\nLabel: %s\nExpected: %s\nActual: %s\n' \
+    "$image" "$label" "$expected" "$actual" >&2
+  if project_images_are_stale; then
+    printf 'Project configuration points to an older image tag. Run: sbx upgrade %s\n' "$PROJECT_SLUG" >&2
+  fi
+  printf 'Safe remediation: sbx build\n' >&2
+  return 1
 }
 
 ensure_opencode_image() {
   docker image inspect "$PROJECT_OPENCODE_IMAGE" >/dev/null 2>&1 \
-    || die "OpenCode image is missing; run sandboxctl build"
+    || image_missing "$PROJECT_OPENCODE_IMAGE"
 
   local kit version package_integrity binary_integrity mode base
   kit="$(docker image inspect --format '{{index .Config.Labels "io.codex-sandbox.kit.version"}}' "$PROJECT_OPENCODE_IMAGE")"
@@ -140,36 +165,37 @@ ensure_opencode_image() {
   mode="$(docker image inspect --format '{{index .Config.Labels "io.codex-sandbox.mode"}}' "$PROJECT_OPENCODE_IMAGE")"
   base="$(docker image inspect --format '{{index .Config.Labels "io.codex-sandbox.base.image"}}' "$PROJECT_OPENCODE_IMAGE")"
 
-  [[ "$kit" == "$KIT_VERSION" ]] || die "OpenCode image kit version does not match versions.lock"
-  [[ "$version" == "$OPENCODE_VERSION" ]] || die "OpenCode image version is invalid"
-  [[ "$package_integrity" == "$OPENCODE_PACKAGE_INTEGRITY" ]] \
-    || die "OpenCode image package integrity label is invalid"
-  [[ "$binary_integrity" == "$OPENCODE_LINUX_X64_INTEGRITY" ]] \
-    || die "OpenCode image binary integrity label is invalid"
-  [[ "$mode" == 'networked-public' ]] || die "OpenCode image mode label is invalid"
-  [[ "$base" == "$BASE_IMAGE" ]] || die "OpenCode image base digest does not match versions.lock"
+  check_image_label "$PROJECT_OPENCODE_IMAGE" io.codex-sandbox.kit.version "$KIT_VERSION" "$kit"
+  check_image_label "$PROJECT_OPENCODE_IMAGE" io.codex-sandbox.opencode.version "$OPENCODE_VERSION" "$version"
+  check_image_label "$PROJECT_OPENCODE_IMAGE" io.codex-sandbox.opencode.package-integrity "$OPENCODE_PACKAGE_INTEGRITY" "$package_integrity"
+  check_image_label "$PROJECT_OPENCODE_IMAGE" io.codex-sandbox.opencode.linux-x64-integrity "$OPENCODE_LINUX_X64_INTEGRITY" "$binary_integrity"
+  check_image_label "$PROJECT_OPENCODE_IMAGE" io.codex-sandbox.mode networked-public "$mode"
+  check_image_label "$PROJECT_OPENCODE_IMAGE" io.codex-sandbox.base.image "$BASE_IMAGE" "$base"
 }
 
-auth_volume_name() {
+codex_auth_volume_name() {
   printf 'codex-sbx-%s-auth-v2' "$PROJECT_SLUG"
 }
 
-ensure_auth_volume() {
+ensure_codex_auth_volume() {
   local volume
-  volume="$(auth_volume_name)"
+  volume="$(codex_auth_volume_name)"
   if ! docker volume inspect "$volume" >/dev/null 2>&1; then
     docker volume create \
       --label io.codex-sandbox.managed=true \
+      --label io.codex-sandbox.agent=codex \
+      --label "io.codex-sandbox.auth.schema=${AUTH_SCHEMA_VERSION}" \
       --label "io.codex-sandbox.project=${PROJECT_SLUG}" \
       --label "io.codex-sandbox.kit.version=${KIT_VERSION}" \
       "$volume" >/dev/null
   else
-    local managed project kit
+    local managed agent project schema kit
     managed="$(docker volume inspect --format '{{index .Labels "io.codex-sandbox.managed"}}' "$volume")"
+    agent="$(docker volume inspect --format '{{index .Labels "io.codex-sandbox.agent"}}' "$volume")"
     project="$(docker volume inspect --format '{{index .Labels "io.codex-sandbox.project"}}' "$volume")"
+    schema="$(docker volume inspect --format '{{index .Labels "io.codex-sandbox.auth.schema"}}' "$volume")"
     kit="$(docker volume inspect --format '{{index .Labels "io.codex-sandbox.kit.version"}}' "$volume")"
-    [[ "$managed" == 'true' && "$project" == "$PROJECT_SLUG" && "$kit" == "$KIT_VERSION" ]] \
-      || die "existing auth volume labels do not match this project and kit"
+    validate_auth_labels codex "$volume" "$managed" "$agent" "$project" "$schema" "$kit"
   fi
 }
 
@@ -178,7 +204,7 @@ ensure_auth_volume() {
 # unexpected persistent content is removed and any cleanup failure is fatal.
 prune_codex_auth_volume() {
   local volume
-  volume="$(auth_volume_name)"
+  volume="$(codex_auth_volume_name)"
   docker volume inspect "$volume" >/dev/null 2>&1 || return 0
   docker run --rm --network none --read-only --cap-drop ALL \
     --security-opt no-new-privileges:true --pids-limit 64 --memory 256m \
@@ -190,13 +216,13 @@ prune_codex_auth_volume() {
 }
 
 prepare_codex_command() {
-  ensure_auth_volume
+  ensure_codex_auth_volume
   prune_codex_auth_volume
 }
 
 finish_codex() {
   if ! prune_codex_auth_volume; then
-    printf 'ERROR: Codex authentication-volume cleanup failed for project %s; the auth volume may contain unexpected files. Inspect it or run: sandboxctl destroy-auth %s --yes\n' \
+    printf 'ERROR: Codex authentication-volume cleanup failed for project %s; the auth volume may contain unexpected files. Inspect it or run: sbx codex reset-auth %s --yes\n' \
       "$PROJECT_SLUG" "$PROJECT_SLUG" >&2
     return 1
   fi
@@ -214,19 +240,49 @@ ensure_opencode_auth_volume() {
     docker volume create \
       --label io.codex-sandbox.managed=true \
       --label io.codex-sandbox.agent=opencode \
+      --label "io.codex-sandbox.auth.schema=${AUTH_SCHEMA_VERSION}" \
       --label "io.codex-sandbox.project=${PROJECT_SLUG}" \
       --label "io.codex-sandbox.kit.version=${KIT_VERSION}" \
       "$volume" >/dev/null
   else
-    local managed agent project kit
+    local managed agent project schema kit
     managed="$(docker volume inspect --format '{{index .Labels "io.codex-sandbox.managed"}}' "$volume")"
     agent="$(docker volume inspect --format '{{index .Labels "io.codex-sandbox.agent"}}' "$volume")"
     project="$(docker volume inspect --format '{{index .Labels "io.codex-sandbox.project"}}' "$volume")"
+    schema="$(docker volume inspect --format '{{index .Labels "io.codex-sandbox.auth.schema"}}' "$volume")"
     kit="$(docker volume inspect --format '{{index .Labels "io.codex-sandbox.kit.version"}}' "$volume")"
-    [[ "$managed" == 'true' && "$agent" == 'opencode' && "$project" == "$PROJECT_SLUG" && "$kit" == "$KIT_VERSION" ]] \
-      || die "existing OpenCode auth volume labels do not match this project and kit"
-    [[ "$agent" == 'opencode' ]] || die "existing auth volume is not labeled for OpenCode"
+    validate_auth_labels opencode "$volume" "$managed" "$agent" "$project" "$schema" "$kit"
   fi
+}
+
+auth_recovery() {
+  local agent="$1"
+  if [[ "$agent" == codex ]]; then
+    printf 'Recovery (deletes only Codex saved login for project %s): sbx codex reset-auth %s --yes\nThen: sbx codex login %s\n' \
+      "$PROJECT_SLUG" "$PROJECT_SLUG" "$PROJECT_SLUG" >&2
+  else
+    printf 'Recovery (deletes only OpenCode saved login for project %s): sbx opencode reset-auth %s --yes\nThen: sbx opencode login %s\n' \
+      "$PROJECT_SLUG" "$PROJECT_SLUG" "$PROJECT_SLUG" >&2
+  fi
+}
+
+validate_auth_labels() {
+  local expected_agent="$1" volume="$2" managed="$3" agent="$4" project="$5" schema="$6" kit="$7"
+  local legacy=false
+  if [[ -z "$schema" && ( "$kit" == 2.0.0 || "$kit" == 2.0.1 ) ]]; then
+    if [[ "$expected_agent" == codex && -z "$agent" ]]; then legacy=true; fi
+    if [[ "$expected_agent" == opencode && "$agent" == opencode ]]; then legacy=true; fi
+  fi
+  if [[ "$managed" == true && "$project" == "$PROJECT_SLUG" \
+        && ( "$agent" == "$expected_agent" || ( "$expected_agent" == codex && "$legacy" == true ) ) \
+        && ( "$schema" == "$AUTH_SCHEMA_VERSION" || "$legacy" == true ) ]]; then
+    return 0
+  fi
+  printf 'ERROR: incompatible authentication volume\nAgent: %s\nProject: %s\nVolume: %s\nExpected schema: %s\nActual labels: managed=%s agent=%s project=%s schema=%s kit-version=%s\n' \
+    "$expected_agent" "$PROJECT_SLUG" "$volume" "$AUTH_SCHEMA_VERSION" \
+    "${managed:-missing}" "${agent:-missing}" "${project:-missing}" "${schema:-missing}" "${kit:-missing}" >&2
+  auth_recovery "$expected_agent"
+  return 1
 }
 
 protected_mount_args=()
@@ -332,7 +388,7 @@ set_common_args() {
     --env HISTFILE=/dev/null
     --env GIT_OPTIONAL_LOCKS=0
     --env XDG_CACHE_HOME=/home/node/.cache
-    --tmpfs /tmp:rw,nosuid,nodev,size=1073741824,mode=1777
+    --tmpfs /tmp:rw,nosuid,nodev,noexec,size=1073741824,mode=1777
     --tmpfs /home/node/.cache:rw,nosuid,nodev,size=2147483648,uid=1000,gid=1000,mode=0700
     --label io.codex-sandbox.managed=true
     --label "io.codex-sandbox.project=${PROJECT_SLUG}"
@@ -383,16 +439,16 @@ run_codex_command() {
   return "$exit_code"
 }
 
-create_networked_container() {
+create_codex_container() {
   local interactive="$1"
   shift
   load_protected_mounts
-  ensure_auth_volume
+  ensure_codex_auth_volume
   set_common_args
   local stamp name volume container_id tty_args=()
   stamp="$(date -u +'%Y%m%dT%H%M%SZ')"
   name="codex-sbx-${PROJECT_SLUG}-networked-${stamp}-$$"
-  volume="$(auth_volume_name)"
+  volume="$(codex_auth_volume_name)"
   [[ "$interactive" == 'true' ]] && tty_args=(-it)
 
   container_id="$(docker create "${tty_args[@]}" \
@@ -409,8 +465,9 @@ create_networked_container() {
     --mount "type=volume,source=${volume},target=/auth,readonly" \
     --tmpfs /home/node/.codex:rw,nosuid,nodev,size=536870912,uid=1000,gid=1000,mode=0700 \
     "${protected_mount_args[@]}" \
+    --entrypoint /usr/local/bin/start-codex-session \
     "$PROJECT_NETWORK_IMAGE" \
-    /usr/local/bin/start-networked-session "$@")"
+    "$@")"
 
   local expected=(
     '/workspace|bind|true'
@@ -424,7 +481,7 @@ create_networked_container() {
     docker rm -f "$container_id" >/dev/null 2>&1 || true
     return 1
   fi
-  write_host_report "$container_id" networked "$stamp"
+  write_host_report "$container_id" codex-networked "$stamp"
   printf '%s' "$container_id"
 }
 
@@ -462,17 +519,17 @@ create_offline_container() {
   printf '%s' "$container_id"
 }
 
-create_login_container() {
+create_codex_login_container() {
   local interactive="$1"
   local auth_writable="$2"
   shift 2
-  ensure_auth_volume
+  ensure_codex_auth_volume
   set_common_args
   local stamp name volume container_id tty_args=() auth_mount auth_expected
   local auth_readonly_env=0
   stamp="$(date -u +'%Y%m%dT%H%M%SZ')"
   name="codex-sbx-${PROJECT_SLUG}-login-${stamp}-$$"
-  volume="$(auth_volume_name)"
+  volume="$(codex_auth_volume_name)"
   [[ "$interactive" == 'true' ]] && tty_args=(-it)
   auth_mount="type=volume,source=${volume},target=/auth"
   auth_expected='/auth|volume|true'
@@ -492,8 +549,9 @@ create_login_container() {
     --env "AUTH_VOLUME_READONLY=${auth_readonly_env}" \
     --mount "$auth_mount" \
     --tmpfs /home/node/.codex:rw,nosuid,nodev,size=536870912,uid=1000,gid=1000,mode=0700 \
+    --entrypoint /usr/local/bin/start-codex-auth-session \
     "$PROJECT_NETWORK_IMAGE" \
-    /usr/local/bin/start-auth-session "$@")"
+    "$@")"
 
   local expected=(
     "$auth_expected"
@@ -502,7 +560,7 @@ create_login_container() {
     docker rm -f "$container_id" >/dev/null 2>&1 || true
     return 1
   fi
-  write_host_report "$container_id" login "$stamp"
+  write_host_report "$container_id" codex-login "$stamp"
   printf '%s' "$container_id"
 }
 
@@ -617,7 +675,7 @@ finish_opencode() {
   RUN_PRUNE_FAILED=0
   if ! prune_opencode_auth_volume; then
     RUN_PRUNE_FAILED=1
-    printf 'ERROR: authentication-volume prune failed for project %s; the auth volume may contain unexpected files. Inspect it or run: sandboxctl destroy-opencode-auth %s --yes\n' \
+    printf 'ERROR: OpenCode authentication-volume prune failed for project %s; the auth volume may contain unexpected files. Inspect it or run: sbx opencode reset-auth %s --yes\n' \
       "$PROJECT_SLUG" "$PROJECT_SLUG" >&2
     return 1
   fi
@@ -636,7 +694,7 @@ create_opencode_container() {
   volume="$(opencode_auth_volume_name)"
   [[ "$interactive" == 'true' ]] && tty_args=(-it)
 
-  local shadow_args=() tmpfs_expected='/home/node/.cache,/home/node/.config,/home/node/.local/share/opencode,/home/node/.local/state,/tmp'
+  local shadow_args=() tmpfs_expected='/home/node/.cache,/home/node/.config,/home/node/.local/share/opencode,/home/node/.local/state,/run/opencode-bun-tmp,/tmp'
   if [[ -d "$REPO_DIR/.opencode" ]]; then
     # Shadow the repository's executable extension surface with an empty,
     # disposable tmpfs so project plugins/commands/agents can never load.
@@ -651,6 +709,7 @@ create_opencode_container() {
     --workdir /workspace \
     --env AGENT_MODE=networked-public \
     --env OPENCODE_DISABLE_PROJECT_CONFIG=1 \
+    --env BUN_TMPDIR=/run/opencode-bun-tmp \
     --mount "type=bind,source=${REPO_DIR},target=/workspace" \
     --mount "type=bind,source=${REPO_DIR}/.git,target=/workspace/.git,readonly" \
     --mount "type=bind,source=${OUTBOX_DIR},target=/agent/outbox" \
@@ -659,6 +718,7 @@ create_opencode_container() {
     --tmpfs /home/node/.local/share/opencode:rw,nosuid,nodev,size=536870912,uid=1000,gid=1000,mode=0700 \
     --tmpfs /home/node/.config:rw,nosuid,nodev,size=16777216,uid=1000,gid=1000,mode=0700 \
     --tmpfs /home/node/.local/state:rw,nosuid,nodev,size=536870912,uid=1000,gid=1000,mode=0700 \
+    --tmpfs /run/opencode-bun-tmp:rw,nosuid,nodev,exec,size=67108864,uid=1000,gid=1000,mode=0700 \
     "${shadow_args[@]}" \
     "${protected_mount_args[@]}" \
     --entrypoint /usr/local/bin/start-opencode-session \
@@ -698,10 +758,12 @@ create_opencode_login_container() {
     --workdir /home/node \
     --env AGENT_MODE=networked-public \
     --env OPENCODE_DISABLE_PROJECT_CONFIG=1 \
+    --env BUN_TMPDIR=/run/opencode-bun-tmp \
     --mount "type=volume,source=${volume},target=/auth" \
     --tmpfs /home/node/.local/share/opencode:rw,nosuid,nodev,size=536870912,uid=1000,gid=1000,mode=0700 \
     --tmpfs /home/node/.config:rw,nosuid,nodev,size=16777216,uid=1000,gid=1000,mode=0700 \
     --tmpfs /home/node/.local/state:rw,nosuid,nodev,size=536870912,uid=1000,gid=1000,mode=0700 \
+    --tmpfs /run/opencode-bun-tmp:rw,nosuid,nodev,exec,size=67108864,uid=1000,gid=1000,mode=0700 \
     --entrypoint /usr/local/bin/start-opencode-auth-session \
     "$PROJECT_OPENCODE_IMAGE" "$@")"
 
@@ -709,12 +771,105 @@ create_opencode_login_container() {
     '/auth|volume|true'
   )
   if ! verify_container "$container_id" bridge \
-      '/home/node/.cache,/home/node/.config,/home/node/.local/share/opencode,/home/node/.local/state,/tmp' "${expected[@]}"; then
+      '/home/node/.cache,/home/node/.config,/home/node/.local/share/opencode,/home/node/.local/state,/run/opencode-bun-tmp,/tmp' "${expected[@]}"; then
     docker rm -f "$container_id" >/dev/null 2>&1 || true
     return 1
   fi
   write_host_report "$container_id" opencode-login "$stamp"
   printf '%s' "$container_id"
+}
+
+cmd_version() {
+  local launcher runtime_kind=source installed_root installed_version=missing
+  launcher="$(command -v sbx 2>/dev/null || printf '%s/bin/sbx' "$KIT_ROOT")"
+  installed_root="${XDG_DATA_HOME:-${HOME}/.local/share}/agent-sandbox-kit"
+  [[ "$KIT_ROOT" == "$installed_root" ]] && runtime_kind=installed || runtime_kind=source
+  if [[ -f "$installed_root/versions.lock" ]]; then
+    installed_version="$(sed -n 's/^KIT_VERSION=//p' "$installed_root/versions.lock" | head -n1)"
+  fi
+  printf 'Kit version: %s\nRuntime root: %s\nRuntime kind: %s\nLauncher path: %s\nversions.lock: %s\nWorkspace root: %s\nNetwork image: %s\nOffline image: %s\nOpenCode image: %s\n' \
+    "$KIT_VERSION" "$KIT_ROOT" "$runtime_kind" "$launcher" "$VERSIONS_FILE" "$WORKSPACES_ROOT" \
+    "$NETWORK_IMAGE" "$OFFLINE_IMAGE" "$OPENCODE_IMAGE"
+  if [[ "$runtime_kind" == source ]]; then
+    printf 'Installed runtime root: %s\nInstalled kit version: %s\n' "$installed_root" "$installed_version"
+    if [[ "$installed_version" != missing && "$installed_version" != "$KIT_VERSION" ]]; then
+      printf 'WARNING: source and installed kit versions differ (source=%s, installed=%s).\nSafe remediation: run ./install.sh from this source checkout.\n' \
+        "$KIT_VERSION" "$installed_version"
+    fi
+  fi
+}
+
+session_is_active() {
+  local lock_dir owner pid
+  lock_dir="$(session_lock_dir)"
+  [[ -d "$lock_dir" ]] || return 1
+  owner="$(cat "$lock_dir/owner.txt" 2>/dev/null || true)"
+  pid="$(printf '%s' "$owner" | sed -n 's/^pid=//p' | head -n1)"
+  [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null
+}
+
+write_project_config() {
+  local destination="$1"
+  {
+    printf 'PROJECT_SLUG=%s\n' "$PROJECT_SLUG"
+    printf 'PROJECT_CPUS=%s\n' "$PROJECT_CPUS"
+    printf 'PROJECT_MEMORY=%s\n' "$PROJECT_MEMORY"
+    printf 'PROJECT_NETWORK_IMAGE=%s\n' "$NETWORK_IMAGE"
+    printf 'PROJECT_OFFLINE_IMAGE=%s\n' "$OFFLINE_IMAGE"
+    printf 'PROJECT_OPENCODE_IMAGE=%s\n' "$OPENCODE_IMAGE"
+  } > "$destination"
+  chmod 0600 "$destination"
+}
+
+validate_upgraded_project() {
+  local slug="$1"
+  ( load_project "$slug" && ensure_project_layout \
+    && [[ "$PROJECT_NETWORK_IMAGE" == "$NETWORK_IMAGE" && "$PROJECT_OFFLINE_IMAGE" == "$OFFLINE_IMAGE" \
+      && "$PROJECT_OPENCODE_IMAGE" == "$OPENCODE_IMAGE" ]] )
+}
+
+cmd_upgrade() {
+  local dry_run=false slug
+  if [[ "${1:-}" == --dry-run ]]; then dry_run=true; shift; fi
+  slug="${1:-}"
+  [[ -n "$slug" && "$#" -eq 1 ]] || die 'usage: sandboxctl upgrade [--dry-run] <slug>'
+  load_project "$slug"
+  ensure_project_layout
+  if session_is_active; then
+    die "cannot upgrade project '$slug' while a Codex or OpenCode task session is active"
+  fi
+  printf 'Project: %s\nCurrent images:\n  Codex networked: %s\n  Codex offline: %s\n  OpenCode: %s\nProposed images:\n  Codex networked: %s\n  Codex offline: %s\n  OpenCode: %s\n' \
+    "$slug" "$PROJECT_NETWORK_IMAGE" "$PROJECT_OFFLINE_IMAGE" "$PROJECT_OPENCODE_IMAGE" \
+    "$NETWORK_IMAGE" "$OFFLINE_IMAGE" "$OPENCODE_IMAGE"
+  if ! project_images_are_stale; then
+    note 'Project configuration is already current; no changes made.'
+    note "Next: sbx codex doctor $slug"
+    note "Or:   sbx opencode doctor $slug"
+    return 0
+  fi
+  if [[ "$dry_run" == true ]]; then
+    note 'Dry run: no files changed.'
+    note 'Next after applying: sbx build'
+    note "Then: sbx codex doctor $slug"
+    return 0
+  fi
+
+  local stamp backup temporary
+  stamp="$(date -u +'%Y%m%dT%H%M%SZ')"
+  backup="${PROJECT_CONFIG}.pre-upgrade-${stamp}-$$.bak"
+  temporary="${PROJECT_CONFIG}.upgrade.$$"
+  cp -p -- "$PROJECT_CONFIG" "$backup"
+  write_project_config "$temporary"
+  mv -f -- "$temporary" "$PROJECT_CONFIG"
+  if ! validate_upgraded_project "$slug"; then
+    cp -p -- "$backup" "$PROJECT_CONFIG"
+    die "upgraded project configuration failed validation; restored original from $backup"
+  fi
+  note "Updated project configuration atomically. Backup: $backup"
+  note 'Configuration upgrade complete; authentication volumes were not changed.'
+  note 'Next: sbx build'
+  note "Then: sbx codex doctor $slug"
+  note "Or:   sbx opencode doctor $slug"
 }
 
 cmd_init() {
@@ -746,7 +901,7 @@ cmd_init() {
 
 cmd_build() {
   require_command docker
-  note "Building pinned networked image: $NETWORK_IMAGE"
+  note "Building pinned Codex networked image: $NETWORK_IMAGE"
   docker build \
     --build-arg "BASE_IMAGE=$BASE_IMAGE" \
     --build-arg "KIT_VERSION=$KIT_VERSION" \
@@ -755,7 +910,7 @@ cmd_build() {
     --build-arg "CODEX_LINUX_X64_INTEGRITY=$CODEX_LINUX_X64_INTEGRITY" \
     --label "io.codex-sandbox.codex.package-integrity=$CODEX_PACKAGE_INTEGRITY" \
     --label "io.codex-sandbox.codex.linux-x64-integrity=$CODEX_LINUX_X64_INTEGRITY" \
-    -f "$KIT_ROOT/images/networked.Dockerfile" \
+    -f "$KIT_ROOT/images/codex-networked.Dockerfile" \
     -t "$NETWORK_IMAGE" "$KIT_ROOT"
   note "Building pinned offline image: $OFFLINE_IMAGE"
   docker build \
@@ -784,7 +939,7 @@ cmd_doctor() {
   docker info >/dev/null
   load_project "$slug"
   ensure_project_layout
-  ensure_images
+  ensure_codex_images
   load_protected_mounts
   note "PASS: Docker daemon is available"
   note "PASS: project layout is complete"
@@ -800,10 +955,10 @@ cmd_run() {
   shift
   load_project "$slug"
   ensure_project_layout
-  ensure_images
+  ensure_codex_images
   acquire_session_lock codex
   prepare_codex_command
-  run_codex_command create_networked_container true \
+  run_codex_command create_codex_container true \
     codex --strict-config --disable apps --disable remote_plugin \
     --dangerously-bypass-approvals-and-sandbox "$@"
 }
@@ -817,10 +972,10 @@ cmd_exec() {
   [[ "$#" -gt 0 ]] || die "a command is required"
   load_project "$slug"
   ensure_project_layout
-  ensure_images
+  ensure_codex_images
   acquire_session_lock codex-exec
   prepare_codex_command
-  run_codex_command create_networked_container false "$@"
+  run_codex_command create_codex_container false "$@"
 }
 
 cmd_shell() {
@@ -828,10 +983,10 @@ cmd_shell() {
   [[ -n "$slug" ]] || die "usage: sandboxctl shell <slug>"
   load_project "$slug"
   ensure_project_layout
-  ensure_images
+  ensure_codex_images
   acquire_session_lock codex-shell
   prepare_codex_command
-  run_codex_command create_networked_container true bash
+  run_codex_command create_codex_container true bash
 }
 
 cmd_offline() {
@@ -843,7 +998,7 @@ cmd_offline() {
   [[ "$#" -gt 0 ]] || die "a command is required"
   load_project "$slug"
   ensure_project_layout
-  ensure_images
+  ensure_codex_images
   local container_id
   container_id="$(create_offline_container false "$@")"
   run_created_container "$container_id" false
@@ -854,9 +1009,9 @@ cmd_login() {
   [[ -n "$slug" ]] || die "usage: sandboxctl login <slug>"
   load_project "$slug"
   ensure_project_layout
-  ensure_images
+  ensure_codex_images
   prepare_codex_command
-  run_codex_command create_login_container true true \
+  run_codex_command create_codex_login_container true true \
     codex login --device-auth
 }
 
@@ -865,9 +1020,9 @@ cmd_auth_status() {
   [[ -n "$slug" ]] || die "usage: sandboxctl auth-status <slug>"
   load_project "$slug"
   ensure_project_layout
-  ensure_images
+  ensure_codex_images
   prepare_codex_command
-  run_codex_command create_login_container false false \
+  run_codex_command create_codex_login_container false false \
     codex login status
 }
 
@@ -876,9 +1031,9 @@ cmd_logout() {
   [[ -n "$slug" ]] || die "usage: sandboxctl logout <slug>"
   load_project "$slug"
   ensure_project_layout
-  ensure_images
+  ensure_codex_images
   prepare_codex_command
-  run_codex_command create_login_container false true \
+  run_codex_command create_codex_login_container false true \
     codex logout
 }
 
@@ -889,7 +1044,7 @@ cmd_destroy_auth() {
     || die "usage: sandboxctl destroy-auth <slug> --yes"
   load_project "$slug"
   local volume
-  volume="$(auth_volume_name)"
+  volume="$(codex_auth_volume_name)"
   docker volume inspect "$volume" >/dev/null 2>&1 || die "auth volume does not exist: $volume"
   docker volume rm "$volume"
   note "Removed project authentication volume: $volume"
@@ -920,7 +1075,7 @@ cmd_run_opencode() {
   shift
   load_project "$slug"
   ensure_project_layout
-  ensure_images
+  ensure_codex_images
   ensure_opencode_image
   acquire_session_lock opencode
   prepare_opencode_session
@@ -933,7 +1088,7 @@ cmd_shell_opencode() {
   [[ -n "$slug" ]] || die "usage: sandboxctl shell-opencode <slug>"
   load_project "$slug"
   ensure_project_layout
-  ensure_images
+  ensure_codex_images
   ensure_opencode_image
   acquire_session_lock opencode-shell
   prepare_opencode_session
@@ -949,7 +1104,7 @@ cmd_exec_opencode() {
   [[ "$#" -gt 0 ]] || die "a command is required"
   load_project "$slug"
   ensure_project_layout
-  ensure_images
+  ensure_codex_images
   ensure_opencode_image
   acquire_session_lock opencode-exec
   prepare_opencode_session
@@ -1010,7 +1165,7 @@ cmd_doctor_opencode() {
   docker info >/dev/null
   load_project "$slug"
   ensure_project_layout
-  ensure_images
+  ensure_codex_images
   ensure_opencode_image
   load_protected_mounts
   note "PASS: Docker daemon is available"
@@ -1058,9 +1213,12 @@ usage() {
   cat <<'EOF'
 Usage: sandboxctl <command> [arguments]
 
-Commands:
+Shared commands:
+  version                     Show runtime, version, workspace, and image diagnostics
   init <slug>                 Create an isolated project directory layout
+  upgrade [--dry-run] <slug>  Safely update an existing project's image references
   build                       Build the pinned v2 images (Codex, offline, OpenCode)
+Legacy Codex compatibility aliases (canonical: sbx codex <action> <project>):
   doctor <slug>               Validate host, project, and image prerequisites
   login <slug>                Sign in through ChatGPT device authorization
   auth-status <slug>          Check whether the project auth volume is signed in
@@ -1072,7 +1230,7 @@ Commands:
   offline <slug> -- <command> Run a command against a fresh offline source copy
   package <slug>              Produce a trusted WSL review bundle
 
-OpenCode commands:
+Legacy OpenCode compatibility aliases (canonical: sbx opencode <action> <project>):
   doctor-opencode <slug>             Validate prerequisites including the OpenCode image
   login-opencode <slug>              Authenticate OpenCode without mounting a project
   auth-status-opencode <slug>        List connected OpenCode providers (no secrets)
@@ -1091,6 +1249,8 @@ main() {
   shift
   case "$command" in
     init) cmd_init "$@" ;;
+    version) cmd_version "$@" ;;
+    upgrade) cmd_upgrade "$@" ;;
     build) cmd_build "$@" ;;
     doctor) cmd_doctor "$@" ;;
     login) cmd_login "$@" ;;

@@ -1,4 +1,4 @@
-# Root-owned requirements constrain security-sensitive values even if a
+# Codex-specific root-owned requirements constrain security-sensitive values even if a
 # repository contains its own .codex configuration.
 allowed_approval_policies = ["never"]
 allowed_sandbox_modes = ["read-only", "danger-full-access"]

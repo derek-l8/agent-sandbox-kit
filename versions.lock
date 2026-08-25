@@ -1,14 +1,14 @@
 # Explicitly reviewed version inputs. Change these only through the upgrade procedure.
-KIT_VERSION=2.0.0
+KIT_VERSION=2.0.2
+AUTH_SCHEMA_VERSION=2
 BASE_IMAGE=mcr.microsoft.com/devcontainers/typescript-node:1-22-bookworm@sha256:7c2e711a4f7b02f32d2da16192d5e05aa7c95279be4ce889cff5df316f251c1d
 CODEX_VERSION=0.148.0
 CODEX_PACKAGE_INTEGRITY=sha512-bh5kH9+BMrFaHGmLeoSansPdfRksvr4UXzjQInns/KRO7r8VJ+6AAW+SqUsE8XcG3+OW/mI4EEy8Gpo9UDXGvQ==
 CODEX_LINUX_X64_INTEGRITY=sha512-uDT9s7AfMr9xLuJX3ZLVWHgHkUpCnZ33CZjZEdVQhrYCIErkDHsCW5TG290nNjaKngK0WxGt5uCcxeUHv9MWWA==
-NETWORK_IMAGE=local/codex-sandbox-networked:2.0.0
-OFFLINE_IMAGE=local/codex-sandbox-offline:2.0.0
+NETWORK_IMAGE=local/codex-sandbox-networked:2.0.2
+OFFLINE_IMAGE=local/codex-sandbox-offline:2.0.2
 # OpenCode adapter (side-by-side; integrity values resolved from registry.npmjs.org on 2026-08-22).
-OPENCODE_IMAGE=local/codex-sandbox-opencode:2.0.0
+OPENCODE_IMAGE=local/codex-sandbox-opencode:2.0.2
 OPENCODE_VERSION=1.18.21
 OPENCODE_PACKAGE_INTEGRITY=sha512-BxQyxpD0y2X0sXJUKLOooXVmi9QIoeKPtdH68r7QRiqXJ/YulK1MQvSe8KyA8183zoPV0G6JAtgz1OqmE3OGUw==
 OPENCODE_LINUX_X64_INTEGRITY=sha512-e7AegOOCksBHTuQ2YUg6J7UxYKMReN21wck52YbEUl2RJvcAnfAyl4sfB6y9QosAILXFl3853EXBbYj/8BljxQ==
-

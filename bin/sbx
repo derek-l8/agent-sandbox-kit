@@ -2,7 +2,13 @@
 
 set -euo pipefail
 
-SBX_KIT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+script_path="${BASH_SOURCE[0]}"
+while [[ -L "$script_path" ]]; do
+  script_dir="$(cd "$(dirname "$script_path")" && pwd)"
+  script_path="$(readlink "$script_path")"
+  [[ "$script_path" == /* ]] || script_path="${script_dir}/${script_path}"
+done
+SBX_KIT_ROOT="$(cd "$(dirname "$script_path")/.." && pwd)"
 SBX_CTL="${SBX_KIT_ROOT}/bin/sandboxctl"
 source "${SBX_KIT_ROOT}/adapters/registry.sh"
 
@@ -18,10 +24,12 @@ Agent Sandbox Kit
 Usage:
   sbx <agent> <action> <project> [arguments]
   sbx init <project>
+  sbx upgrade [--dry-run] <project>
   sbx build
+  sbx version
 
 Agents: codex, opencode
-Actions: run, login, doctor, shell, exec
+Actions: run, login, auth-status, logout, doctor, shell, exec, reset-auth
 
 Examples:
   sbx codex run my-project
@@ -36,7 +44,7 @@ main() {
   local first="${1:-}"
   case "$first" in
     help|-h|--help|'') usage; [[ -n "$first" ]] || return 2; return 0 ;;
-    init|build)
+    init|build|upgrade|version)
       shift
       exec "$SBX_CTL" "$first" "$@"
       ;;

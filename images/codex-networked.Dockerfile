@@ -15,24 +15,24 @@ RUN test "$(npm view "@openai/codex@${CODEX_VERSION}" dist.integrity)" = "${CODE
     && npm cache clean --force \
     && test "$(codex --version | awk '{print $2}')" = "${CODEX_VERSION}"
 
-COPY config/config.toml /etc/codex/config.toml
-COPY config/requirements.toml /etc/codex/requirements.toml
+COPY config/codex-config.toml /etc/codex/config.toml
+COPY config/codex-requirements.toml /etc/codex/requirements.toml
 COPY container/check-common.sh /usr/local/lib/codex-sandbox/check-common.sh
-COPY container/check-networked.sh /usr/local/bin/check-networked-boundaries
-COPY container/check-login.sh /usr/local/bin/check-login-boundaries
+COPY container/check-codex-networked.sh /usr/local/bin/check-codex-networked-boundaries
+COPY container/check-codex-login.sh /usr/local/bin/check-codex-login-boundaries
 COPY container/prune-auth-volume.sh /usr/local/lib/codex-sandbox/prune-auth-volume
-COPY container/run-with-project-auth.sh /usr/local/bin/run-with-project-auth
-COPY container/start-auth-session.sh /usr/local/bin/start-auth-session
-COPY container/start-networked-session.sh /usr/local/bin/start-networked-session
+COPY container/run-with-codex-auth.sh /usr/local/bin/run-with-codex-auth
+COPY container/start-codex-auth-session.sh /usr/local/bin/start-codex-auth-session
+COPY container/start-codex-session.sh /usr/local/bin/start-codex-session
 
 RUN chmod 0444 /etc/codex/config.toml /etc/codex/requirements.toml \
     && chmod 0555 /usr/local/lib/codex-sandbox/check-common.sh \
         /usr/local/lib/codex-sandbox/prune-auth-volume \
-        /usr/local/bin/check-networked-boundaries \
-        /usr/local/bin/check-login-boundaries \
-        /usr/local/bin/run-with-project-auth \
-        /usr/local/bin/start-auth-session \
-        /usr/local/bin/start-networked-session \
+        /usr/local/bin/check-codex-networked-boundaries \
+        /usr/local/bin/check-codex-login-boundaries \
+        /usr/local/bin/run-with-codex-auth \
+        /usr/local/bin/start-codex-auth-session \
+        /usr/local/bin/start-codex-session \
     && printf 'networked-public\n' > /etc/agent-mode \
     && chmod 0444 /etc/agent-mode \
     && mkdir -p /auth /home/node/.codex /home/node/.cache /workspace \

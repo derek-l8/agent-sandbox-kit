@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 
-# Proves that login-opencode, auth-status-opencode, and logout-opencode can
+# OpenCode-specific reachability: login-opencode, auth-status-opencode, and logout-opencode can
 # reach ensure_opencode_auth_volume as a top-level function without another
 # command (such as one that calls load_protected_mounts) defining it first.
 #
@@ -79,7 +79,8 @@ docker() {
           printf '/auth|volume|true\n' ;;
         *Tmpfs*)
           printf '%s\n' /home/node/.cache /home/node/.config \
-            /home/node/.local/share/opencode /home/node/.local/state /tmp ;;
+            /home/node/.local/share/opencode /home/node/.local/state \
+            /run/opencode-bun-tmp /tmp ;;
         '{{.State.Status}}') echo "exited" ;;
         '{{.State.ExitCode}}') echo "0" ;;
         *) echo "stub" ;;

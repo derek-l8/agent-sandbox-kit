@@ -38,9 +38,10 @@ RUN chmod 0555 /etc/opencode \
     && mkdir -p /auth /workspace \
         /home/node/.cache /home/node/.config \
         /home/node/.local/share/opencode \
-        /home/node/.local/state \
+        /home/node/.local/state /run/opencode-bun-tmp \
     && chown -R node:node /auth /home/node/.cache /home/node/.config \
-        /home/node/.local/share/opencode /home/node/.local/state /workspace \
+        /home/node/.local/share/opencode /home/node/.local/state \
+        /run/opencode-bun-tmp /workspace \
     && rm -f /etc/sudoers.d/node
 
 LABEL org.opencontainers.image.title="Codex Sandbox OpenCode Runner" \
@@ -61,7 +62,8 @@ ENV AGENT_MODE=networked-public \
     OPENCODE_DISABLE_AUTOUPDATE=true \
     OPENCODE_DISABLE_DEFAULT_PLUGINS=true \
     OPENCODE_DISABLE_LSP_DOWNLOAD=true \
-    OPENCODE_DISABLE_PROJECT_CONFIG=1
+    OPENCODE_DISABLE_PROJECT_CONFIG=1 \
+    BUN_TMPDIR=/run/opencode-bun-tmp
 
 USER node
 WORKDIR /workspace

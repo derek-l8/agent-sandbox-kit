@@ -13,6 +13,8 @@ set -euo pipefail
 # covers any remaining execution path.
 : "${OPENCODE_DISABLE_PROJECT_CONFIG:=1}"
 export OPENCODE_DISABLE_PROJECT_CONFIG
+: "${BUN_TMPDIR:=/run/opencode-bun-tmp}"
+export BUN_TMPDIR
 
 auth_store=/auth/auth.json
 data_home="${XDG_DATA_HOME:-${HOME}/.local/share}"

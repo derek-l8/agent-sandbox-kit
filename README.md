@@ -23,8 +23,16 @@ sbx codex login my-project
 sbx codex run my-project
 ```
 
-The installer links `sbx` into `~/.local/bin` without root access. If that
-directory is not on `PATH`, it prints the exact shell setup line to add.
+The installer copies a self-contained runtime to
+`${XDG_DATA_HOME:-$HOME/.local/share}/agent-sandbox-kit` and links `sbx` from
+`${XDG_BIN_HOME:-$HOME/.local/bin}` without root access. The installed command
+does not depend on the checkout remaining in place. If the command directory
+is not on `PATH`, the installer prints the exact shell setup line to add.
+
+Running `./install.sh` again stages and validates a complete new runtime before
+replacing the installed one. If copying, validation, or replacement fails, the
+previous runtime is retained or restored. The installer does not modify or
+remove `~/codex-sandbox-kit`.
 
 OpenCode uses the same shape:
 
@@ -36,6 +44,36 @@ sbx opencode run my-project
 
 Create a trusted baseline commit before an agent session. Review, commit, and
 push from WSL, outside the container.
+
+## First installation and updates
+
+First installation:
+
+```bash
+cd ~/src/agent-sandbox-kit
+./install.sh
+sbx build
+sbx init my-project
+sbx codex doctor my-project
+```
+
+Updating the kit and an existing project:
+
+```bash
+cd ~/src/agent-sandbox-kit
+git pull --ff-only
+./install.sh
+sbx version
+sbx build
+sbx upgrade my-project
+sbx codex doctor my-project
+```
+
+Use `sbx opencode doctor my-project` for OpenCode. The installer copies the
+reviewed source into a staged, validated installed runtime. `sbx` normally runs
+that installed runtime, `build` builds its pinned images, `upgrade` atomically
+updates only the project's image references, and `doctor` verifies without
+repairing. Compatible authentication schema v2 volumes survive patch upgrades.
 
 ## Everyday commands
 
@@ -70,11 +108,13 @@ agent credential from repository code, or preservation of the writable tree.
 See the [operator guide](docs/OPERATOR-GUIDE.md) and
 [security reference](docs/MAINTAINER-SECURITY.md).
 
-## Advanced and compatibility commands
+## Advanced shared commands and legacy compatibility
 
 `bin/sbx` is a small argument-preserving wrapper around `bin/sandboxctl`; it
-contains no container or security logic. The original launcher remains
-supported with every existing command and behavior:
+contains no container or security logic. Agent-specific public usage always
+uses `sbx <agent> <action> <project>`. The original launcher routes below are
+retained only as legacy compatibility aliases so existing automation does not
+break:
 
 ```bash
 bin/sandboxctl --help
@@ -85,6 +125,9 @@ bin/sandboxctl package <project>
 bin/sandboxctl auth-status <project>
 bin/sandboxctl auth-status-opencode <project>
 ```
+
+For an installed kit, the compatibility launcher is at
+`${XDG_DATA_HOME:-$HOME/.local/share}/agent-sandbox-kit/bin/sandboxctl`.
 
 The workspace root defaults to `$HOME/agent-workspaces`; set
 `CODEX_SANDBOX_WORKSPACES_ROOT` for another WSL location. Projects require a
@@ -101,7 +144,7 @@ bash tests/static.sh
 Docker-based, model-free smoke checks:
 
 ```bash
-bash tests/smoke.sh
+bash tests/smoke-codex.sh
 bash tests/smoke-opencode.sh
 ```
 

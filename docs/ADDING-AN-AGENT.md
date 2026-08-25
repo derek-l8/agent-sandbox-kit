@@ -22,6 +22,13 @@ below; Claude Code is not installed or implemented by this repository.
    adapter metadata.
 7. Update the README, operator guide, and maintainer security reference.
 
+Use the repository naming classes consistently: shared boundary infrastructure
+uses neutral `agent-sandbox` or generic names; an agent-specific adapter,
+Dockerfile, entrypoint, helper, test, report, variable, and message includes
+the agent ID; and any old route retained for compatibility is explicitly
+labeled legacy. Do not rename persistent volume names, image labels or tags,
+or `project.env` keys without a tested automatic migration.
+
 ## Required security review
 
 Document the executable's startup and update behavior, all writable paths,
@@ -38,6 +45,10 @@ whether task-time refresh must persist. Use a dedicated per-project volume,
 mount it read-only for run/shell/exec, mount no workspace during authentication,
 and implement a fail-closed before/after prune with an exact file allowlist.
 Never assume another agent's `auth.json` format or lifecycle applies.
+Define authentication compatibility independently from `KIT_VERSION`. Label
+new volumes with `io.codex-sandbox.auth.schema` and agent identity, and document
+any narrowly accepted legacy labels; patch releases are informational labels,
+not authentication compatibility gates.
 
 An adapter may select only reviewed agent metadata and existing handler routes.
 It must not control mounts, network mode, capabilities, devices, ports,
@@ -52,7 +63,9 @@ stub tests for every handler. Cover exact forwarding after `--`, image and
 entrypoint selection, allowed mounts and tmpfs, read-only task authentication,
 writable auth-only login, no workspace during login, lock sharing, stale
 cleanup, prune on success/failure/interruption, managed configuration, invalid
-configuration, and backward-compatible `sandboxctl` commands.
+configuration, and legacy-compatible `sandboxctl` aliases. Canonical public
+tests and documentation must invoke agent actions through
+`sbx <agent> <action> <project>`.
 
 Pin the base image by digest and the agent/package/binary by exact version and
 published integrity hash. The build must independently verify each integrity

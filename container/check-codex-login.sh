@@ -20,4 +20,4 @@ else
   fail "Codex CLI is absent"
 fi
 
-finish_boundary_check login
+finish_boundary_check codex-login

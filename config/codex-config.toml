@@ -1,4 +1,4 @@
-# Root-owned system configuration. CODEX_HOME is recreated for every session;
+# Codex-specific root-owned system configuration. CODEX_HOME is recreated for every session;
 # only auth.json is synchronized with the project-specific authentication volume.
 sandbox_mode = "danger-full-access"
 approval_policy = "never"
