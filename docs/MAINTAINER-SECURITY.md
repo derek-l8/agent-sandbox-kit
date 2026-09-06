@@ -9,7 +9,7 @@ repositories.
 `bin/sbx` performs only allowlisted agent/action translation and delegates to
 `bin/sandboxctl`. The explicit registry under `adapters/` holds agent identity,
 image/version keys, executable, authentication strategy, validation routine,
-and compatibility command routes. It cannot supply Docker arguments.
+and allowlisted handler routes. It cannot supply Docker arguments.
 
 The shared launcher retains ownership of isolation flags, allowed mounts and
 their post-create verification, resources, locking, cleanup, and protected
@@ -19,13 +19,12 @@ only an adapter file. See [Adding an Agent](ADDING-AN-AGENT.md).
 ## Security objective
 
 The expected damage boundary for the networked runner is one deliberately
-selected public or synthetic working tree, its scratch directory, its outbox,
+selected working tree, its read-only context, its writable persistent data,
 its disposable caches, and its project-specific Codex login. The design does
 not claim protection against Docker, kernel, or virtualization vulnerabilities.
 
-The offline runner separates private-data access from Codex and outbound
-communication. The intended workflow performs review and Git promotion from
-WSL.
+All task runs are networked. Context and data stay outside Git, but are not
+isolated from outbound communication. Review and Git promotion happen in WSL.
 
 ## Why the kit does not use Dev Containers as the boundary
 
@@ -49,7 +48,7 @@ Untrusted during a networked run:
 - the repository working tree and project instructions;
 - dependencies, build scripts, tests, websites, fixtures, and tool output;
 - all model-generated commands and files;
-- outbox content produced by container code.
+- data content produced by container code.
 
 ## Container creation and verification
 
@@ -71,14 +70,14 @@ container cannot alter it. A second root-owned check runs inside the container.
 
 - `/workspace`: selected repository, writable;
 - `/workspace/.git`: nested read-only bind mount;
-- `/agent/scratch`: public/synthetic scratch, writable;
-- `/agent/outbox`: review output, writable;
+- `/context`: supplied reference files, read-only;
+- `/data`: persistent output and state outside Git, writable;
 - `/auth`: project-specific authentication volume, mounted read-only for
   task, shell, and exec sessions;
 - `/home/node/.codex`, `/home/node/.cache`, and `/tmp`: disposable tmpfs
   mounts.
 
-There is no inbox, Docker socket, Windows drive, WSL home mount, SSH agent,
+There is no Docker socket, Windows drive, WSL home mount, SSH agent,
 browser profile, VS Code volume, or WSLg socket.
 
 ## OpenCode adapter
@@ -115,10 +114,10 @@ Enforced OpenCode-specific boundaries:
   neither the workspace nor the authentication volume. The deliberate tradeoff
   is one narrowly scoped executable writable mount inside OpenCode containers;
   limiting its owner, size, lifetime, and consumers avoids weakening general
-  temporary storage or the Codex/offline boundaries;
+  temporary storage or the Codex boundaries;
 - managed configuration baked root-owned at `/etc/opencode/opencode.json`,
   together with image environment settings, is intended to disable autoupdate,
-  sharing, snapshots, MCP servers, external-directory access, project/default
+  sharing, snapshots, MCP servers, external-directory access except `/context` and `/data`, project/default
   plugins, and plugin/LSP downloads, and configures denials for `git push*`,
   `git commit*`, `git remote*`, `git submodule*`, and `gh *`;
 - `OPENCODE_DISABLE_PROJECT_CONFIG=1` is set on the image environment, on both
@@ -137,9 +136,9 @@ mount the working tree and do not use this lock.
 
 The security goal is to omit Windows files, the WSL home directory, host
 credentials (including SSH keys and GitHub tokens), other projects, and the
-Docker daemon from the verified mount list. Project data in WSL is disposable;
-GitHub is the durable source of truth. Deletion or corruption of the mounted
-repository is an accepted risk. The kit does not prevent use of credentials or
+Docker daemon from the verified mount list. The writable repository and `/data` can be
+deleted or corrupted by the agent. `/data` requires its own backup; it is not
+published to GitHub. Imported context cannot be modified through its mount. The kit does not prevent use of credentials or
 writable remote URLs already stored inside the selected repository.
 
 Repository text content is explicitly not treated as an enforceable boundary.
@@ -152,18 +151,6 @@ makes no claim that repository text cannot influence the model.
 There is no mechanism intended to prevent repository instruction files from
 influencing the agent. Isolation relies on the Docker boundary and managed
 configuration.
-
-## Offline runner mounts
-
-- `/source`: current repository, read-only;
-- `/agent/inbox`: selected private fixtures, read-only;
-- `/agent/outbox`: review output, writable;
-- `/workspace`: fresh tmpfs populated from `/source` on every invocation;
-- `/home/node/.cache` and `/tmp`: disposable tmpfs mounts.
-
-The container uses Docker network mode `none` and contains no Codex executable.
-Projects needing additional offline dependencies require a separately reviewed
-and locked custom offline image.
 
 ## Codex configuration
 
@@ -223,14 +210,10 @@ the old kit label is informational. Wrong project/agent, missing management,
 or unsupported explicit schema still fails closed with an agent-specific reset
 command. Reset is never automatic.
 
-The generic `NETWORK_IMAGE`, `OFFLINE_IMAGE`, `PROJECT_NETWORK_IMAGE`, and
-`PROJECT_OFFLINE_IMAGE` keys, the `local/codex-sandbox-*` image tags,
-`io.codex-sandbox.*` labels, and `codex-sbx-*` volume/container prefixes are
-persisted compatibility identifiers from earlier releases. They are
-deliberately unchanged in 2.0.2 because renaming them without an automatic,
-tested migration would strand project configuration, images, volumes, or
-cleanup discovery. New implementation files and functions use explicit agent
-names; these persisted identifiers are not a naming template for new agents.
+Version 3 removes offline image keys and old command aliases without an
+automatic workspace migration. Existing authentication schema v2 and
+`codex-sbx-*` volume names are retained. `NETWORK_IMAGE` and
+`PROJECT_NETWORK_IMAGE` continue to identify the Codex image.
 
 Do not use `latest`, floating base tags without digests, or automatic agent
 updates. Upgrades are deliberate maintenance events:
@@ -275,8 +258,8 @@ substitute for the root-owned kit controls.
 
 Custom project images may be selected in `project.env`. They must retain the
 labels, users, paths, boundary scripts, and entrypoints expected by the
-launcher. A custom offline image should install reviewed, locked runtime
-dependencies while keeping network access disabled at test time.
+launcher. Document tooling belongs to harness/image customization, not the
+file-import workflow.
 
 ## Incident response
 
@@ -285,7 +268,7 @@ unexpected container behavior:
 
 1. Stop and remove the task container.
 2. Preserve the trusted host-side boundary report.
-3. Review the repository and outbox from trusted WSL.
+3. Review the repository and data from trusted WSL.
 4. Run `sbx codex logout <slug>` and `sbx opencode logout <slug>` when possible.
 5. Run `sbx codex reset-auth <slug> --yes` and
    `sbx opencode reset-auth <slug> --yes`.

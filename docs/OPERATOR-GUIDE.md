@@ -58,18 +58,36 @@ Git worktrees are not supported.
 
 The launcher checks the container, writes a report under `control/logs`, and
 then starts it. Both agents share a per-project lock. Networked runners receive
-only the selected repository, outbox, scratch, internet access, and their
-project login. They do not receive the private inbox, Windows drives, general
+only the selected repository, read-only `/context`, writable persistent `/data`,
+internet access, and their project login. They do not receive Windows drives, general
 WSL home, SSH material, Docker socket, browser sessions, or editor sockets.
 
-## Offline validation, review, and authentication maintenance
+## External context and data
 
-The agent-specific authentication operations use explicit public routing.
-Shared offline and packaging operations remain agent-neutral:
+Run `sbx context <project>` and paste Windows **Copy as path** values, one
+quoted path per line; finish with a blank line. It translates paths with
+`wslpath`, copies regular files to the project's WSL `context/` directory,
+and prints the container paths. You can import before cloning the repository.
+For arguments, use `sbx context <project> add '/wsl/path/file.pdf'`.
+Use single shell quotes around Windows paths passed as arguments; the
+interactive prompt accepts Explorer's double quotes literally.
+
+Imports keep each file's basename. A name collision asks before replacing
+that copy. Multiple files are processed in order; a failed import stops the
+batch, preserving earlier successful imports. Directories and symlinks are
+not imported. Files are copied unchanged, without format detection or parsing.
+
+`sbx context <project> list` prints imported files. To delete only a WSL copy,
+use `sbx context <project> remove 'filename.pdf'`. Source files are untouched.
+Imports/removals share the agent session lock; exit the task before changing
+its context. Put generated files and ongoing state in `/data`, which persists
+across disposable containers. Both directories are outside `repo/` and Git.
+They are still available to the networked agent, and copying content into
+the repository remains possible. Back up important data separately.
+
+## Authentication maintenance
 
 ```bash
-bin/sandboxctl offline my-project -- pytest -q
-bin/sandboxctl package my-project
 sbx codex auth-status my-project
 sbx codex logout my-project
 sbx codex reset-auth my-project --yes
@@ -78,14 +96,9 @@ sbx opencode logout my-project
 sbx opencode reset-auth my-project --yes
 ```
 
-The offline runner has no Docker network or Codex installation. Source and
-inbox are read-only; only its outbox persists. Review every output before
-sharing, committing, or pushing.
-
 Task, shell, and exec sessions mount authentication read-only. Cleanup helpers
 prune unexpected persistent auth content before and after commands and fail
-closed on errors. If a credential may have been exposed, log out and destroy
-its volume.
+closed on errors. Review and promote Git changes from the host.
 
 ## Settings and troubleshooting
 
@@ -125,19 +138,14 @@ dropped capabilities, `no-new-privileges`, resource limits, and project lock.
 Consequently the direct-WSL Bubblewrap warning is not expected for this path,
 and Bubblewrap should not be added to the image as a duplicate security layer.
 
-## Compatibility interface
+## Version 3 compatibility
 
-`bin/sandboxctl` remains the underlying launcher. Its implicit Codex commands
-and suffixed OpenCode commands are documented legacy compatibility aliases.
-Canonical agent-specific usage is `sbx codex ...` or `sbx opencode ...`.
-`bin/sbx` preserves arguments exactly, including everything after `--`.
-
-```bash
-bin/sandboxctl --help
-```
-
-In an installed kit, invoke this interface as
-`${XDG_DATA_HOME:-$HOME/.local/share}/agent-sandbox-kit/bin/sandboxctl`.
+Only canonical `sbx <agent> <action> <project>` commands are supported. The
+underlying `bin/sandboxctl` accepts the same canonical arguments; old aliases,
+offline execution, and review packaging have been removed. Version 3 expects
+`repo/`, `context/`, `data/`, and host-only `control/`. It never deletes or
+silently migrates an old layout. Initialize a new slug when necessary.
+Image upgrades preserve authentication schema v2 volumes.
 
 ## Trusted-WSL validation
 

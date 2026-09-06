@@ -38,8 +38,8 @@ printf 'PASS: installer creates a complete XDG runtime and explains missing PATH
 mv "$source_copy" "$work/source-unavailable"
 help="$(HOME="$home" XDG_BIN_HOME="$xdg_bin" XDG_DATA_HOME="$xdg_data" "$sbx" --help)"
 [[ "$help" == *'Agent Sandbox Kit'* ]] || { echo 'FAIL: installed help unavailable' >&2; exit 1; }
-[[ "$("$sbx" codex run probe)" == $'<run>\n<probe>' ]]
-[[ "$("$sbx" opencode exec probe -- command --flag)" == $'<exec-opencode>\n<probe>\n<-->\n<command>\n<--flag>' ]]
+[[ "$("$sbx" codex run probe)" == $'<codex>\n<run>\n<probe>' ]]
+[[ "$("$sbx" opencode exec probe -- command --flag)" == $'<opencode>\n<exec>\n<probe>\n<-->\n<command>\n<--flag>' ]]
 printf 'PASS: installed help and adapter routes survive an unavailable source tree\n'
 
 output="$(HOME="$home" XDG_BIN_HOME="$xdg_bin" XDG_DATA_HOME="$xdg_data" PATH="$xdg_bin:/usr/bin:/bin" bash "$root/install.sh")"

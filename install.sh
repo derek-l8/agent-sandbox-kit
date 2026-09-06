@@ -52,14 +52,14 @@ for item in "${runtime_items[@]}"; do
 done
 
 for required in \
-  bin/sbx bin/sandboxctl adapters/registry.sh adapters/codex.sh adapters/opencode.sh \
-  config/codex-config.toml config/codex-requirements.toml config/opencode-managed.json \
-  images/codex-networked.Dockerfile images/offline.Dockerfile images/opencode.Dockerfile \
-  container/check-common.sh container/check-codex-networked.sh container/check-offline.sh \
+  bin/sbx bin/sandboxctl bin/context.sh adapters/registry.sh adapters/codex.sh adapters/opencode.sh \
+  config/agent-workspace.md config/codex-config.toml config/codex-requirements.toml config/opencode-managed.json \
+  images/codex-networked.Dockerfile images/opencode.Dockerfile \
+  container/check-common.sh container/check-codex-networked.sh \
   container/check-codex-login.sh container/check-opencode-networked.sh container/check-opencode-login.sh \
   container/prune-auth-volume.sh container/run-with-codex-auth.sh \
   container/run-with-opencode-auth.sh container/start-codex-auth-session.sh \
-  container/start-codex-session.sh container/start-offline-session.sh \
+  container/start-codex-session.sh \
   container/start-opencode-auth-session.sh container/start-opencode-session.sh versions.lock; do
   [[ -f "${stage}/${required}" ]] || {
     printf 'ERROR: staged runtime is incomplete: %s\n' "$required" >&2
@@ -68,6 +68,7 @@ for required in \
 done
 bash -n "$stage/bin/sbx"
 bash -n "$stage/bin/sandboxctl"
+bash -n "$stage/bin/context.sh"
 "$stage/bin/sbx" --help >/dev/null
 ln -s "${runtime_root}/bin/sbx" "$link_stage"
 

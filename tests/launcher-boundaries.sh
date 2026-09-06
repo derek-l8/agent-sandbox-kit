@@ -5,7 +5,7 @@
 # real command code paths run end to end against a synthetic project, and the
 # recorded container definitions are asserted against:
 #   - correct OpenCode image selection;
-#   - project-only mount boundaries (workspace, read-only .git, outbox, scratch);
+#   - project-only mount boundaries (workspace, read-only .git, data, context);
 #   - absence of Windows, WSL-home, credential, inbox, and Docker-socket mounts;
 #   - read-only auth volume in task sessions, writable only in login sessions;
 #   - resource limits (cpus/memory/pids), read-only rootfs, cap-drop ALL,
@@ -31,8 +31,8 @@ fail() {
 slug="boundary-probe"
 ws="$work/workspaces"
 proj="$ws/$slug"
-mkdir -p "$proj"/{repo/.git,inbox,outbox,scratch,control/logs}
-printf 'PROJECT_SLUG=%s\nPROJECT_CPUS=3\nPROJECT_MEMORY=5g\nPROJECT_NETWORK_IMAGE=local/codex-sandbox-networked:2.0.2\nPROJECT_OFFLINE_IMAGE=local/codex-sandbox-offline:2.0.2\n' "$slug" \
+mkdir -p "$proj"/{repo/.git,context,data,control/logs}
+printf 'PROJECT_SLUG=%s\nPROJECT_CPUS=3\nPROJECT_MEMORY=5g\nPROJECT_NETWORK_IMAGE=local/codex-sandbox-networked:3.0.0\n' "$slug" \
   > "$proj/control/project.env"
 touch "$proj/repo/AGENTS.md"
 
@@ -68,11 +68,7 @@ docker() {
           *codex.version*) echo "$CODEX_VERSION" ;;
           *base.image*) echo "$BASE_IMAGE" ;;
           *mode*)
-            if [[ "${5:-}" == *offline* ]]; then
-              echo "offline-private-test"
-            else
-              echo "networked-public"
-            fi ;;
+            echo "networked-public" ;;
           *) echo "" ;;
         esac
       fi
@@ -82,29 +78,28 @@ docker() {
         '{{.HostConfig.Privileged}}') echo "false" ;;
         '{{.HostConfig.ReadonlyRootfs}}') echo "true" ;;
         '{{.HostConfig.NetworkMode}}')
-          [[ "${MOUNTS_MODE:-task}" == offline ]] && echo none || echo bridge ;;
+          echo bridge ;;
         '{{json .HostConfig.CapDrop}}') echo '["ALL"]' ;;
         '{{json .HostConfig.SecurityOpt}}') echo '["no-new-privileges:true"]' ;;
         '{{json .HostConfig.Devices}}'|'{{json .HostConfig.PortBindings}}') echo "null" ;;
         *Mounts*)
-          if [[ "${MOUNTS_MODE:-task}" == offline ]]; then
-            printf '%s\n' '/agent/inbox|bind|false' '/agent/outbox|bind|true' '/source|bind|false'
-          elif [[ "${MOUNTS_MODE:-task}" == "login" || "${MOUNTS_MODE:-task}" == "codex-login" ]]; then
+          if [[ "${MOUNTS_MODE:-task}" == "login" || "${MOUNTS_MODE:-task}" == "codex-login" ]]; then
             printf '/auth|volume|true\n'
           elif [[ "${MOUNTS_MODE:-task}" == "codex-status" ]]; then
             printf '/auth|volume|false\n'
           else
             printf '%s\n' \
-              '/agent/outbox|bind|true' \
-              '/agent/scratch|bind|true' \
+              '/data|bind|true' \
+              "/context|bind|${CONTEXT_WRITABLE:-false}" \
               '/auth|volume|false' \
               '/workspace|bind|true' \
               '/workspace/.git|bind|false'
+            if [[ "${EXTRA_MOUNT:-false}" == true ]]; then
+              printf '%s\n' '/unexpected|bind|true'
+            fi
           fi ;;
         *Tmpfs*)
-          if [[ "${MOUNTS_MODE:-task}" == offline ]]; then
-            printf '%s\n' /home/node/.cache /tmp /workspace
-          elif [[ "${MOUNTS_MODE:-task}" == codex-* ]]; then
+          if [[ "${MOUNTS_MODE:-task}" == codex-* ]]; then
             printf '%s\n' /home/node/.cache /home/node/.codex /tmp
           else
             printf '%s\n' /home/node/.cache /home/node/.config \
@@ -155,9 +150,8 @@ record_command() {
 
 record_codex_command() {
   local label="$1" mode="$2" entrypoint_kind="$3"
-  local image='local/codex-sandbox-networked:2.0.2'
+  local image='local/codex-sandbox-networked:3.0.0'
   shift 3
-  [[ "$entrypoint_kind" == none ]] && image='local/codex-sandbox-offline:2.0.2'
   rm -f "$work/calls.txt"
   local rc=0
   CALLLOG="$work/calls.txt" WS="$ws" LIB="$work/sandboxctl-lib.sh" ROOT="$root" \
@@ -217,7 +211,7 @@ assert_rejected_entrypoint_mutation() {
   local label="$1" kind="$2" invocation="$3"
   printf '%s\n' "$invocation" > "$work/mutated-create-args.txt"
   if assert_entrypoint_structure "$label" "$kind" \
-      'local/codex-sandbox-networked:2.0.2' "$work/mutated-create-args.txt"; then
+      'local/codex-sandbox-networked:3.0.0' "$work/mutated-create-args.txt"; then
     fail "$label mutation was not rejected"
   fi
   printf 'PASS: %s mutation is rejected\n' "$label"
@@ -236,7 +230,7 @@ assert_create() {
   printf 'PASS: %s\n' "$label"
 }
 
-opencode_image="local/codex-sandbox-opencode:2.0.2"
+opencode_image="local/codex-sandbox-opencode:3.0.0"
 
 # --- Task session: run-opencode -------------------------------------------
 record_command "run-opencode" task cmd_run_opencode "$slug"
@@ -251,8 +245,8 @@ assert_create "type=volume,source=codex-sbx-${slug}-opencode-auth-v2,target=/aut
   "task session mounts a separate OpenCode auth volume read-only"
 assert_create "type=bind,source=$proj/repo,target=/workspace" "task session mounts only the project repo"
 assert_create "type=bind,source=$proj/repo/.git,target=/workspace/.git,readonly" "Git metadata is read-only"
-assert_create "source=$proj/outbox,target=/agent/outbox" "review outbox is mounted"
-assert_create "source=$proj/scratch,target=/agent/scratch" "scratch space is mounted"
+assert_create "source=$proj/data,target=/data" "persistent data is mounted"
+assert_create "source=$proj/context,target=/context,readonly" "context is mounted read-only"
 assert_create "/mnt/c" "no Windows drive is mounted" absent
 assert_create "docker.sock" "no Docker socket is mounted" absent
 assert_create "\.ssh" "no SSH material is mounted" absent
@@ -318,7 +312,7 @@ assert_create "--entrypoint /usr/local/bin/start-opencode-auth-session $opencode
 record_codex_command "run" codex-task task cmd_run "$slug"
 assert_create "BUN_TMPDIR" "Codex task does not receive OpenCode Bun tmpdir" absent
 assert_create "/run/opencode-bun-tmp" "Codex task does not receive executable OpenCode tmpfs" absent
-assert_create "--entrypoint /usr/local/bin/start-codex-session local/codex-sandbox-networked:2.0.2 codex --strict-config --disable apps --disable remote_plugin --dangerously-bypass-approvals-and-sandbox" \
+assert_create "--entrypoint /usr/local/bin/start-codex-session local/codex-sandbox-networked:3.0.0 codex --strict-config --disable apps --disable remote_plugin --dangerously-bypass-approvals-and-sandbox" \
   "Codex run explicitly bypasses the inner Linux sandbox inside Docker"
 assert_create "type=volume,source=codex-sbx-${slug}-auth-v2,target=/auth,readonly" \
   "Codex run mounts authentication read-only"
@@ -330,11 +324,11 @@ assert_create "target=/agent/inbox" "Codex run excludes the private inbox" absen
 
 record_codex_command "shell" codex-task task cmd_shell "$slug"
 assert_create "target=/auth,readonly" "Codex shell keeps authentication read-only"
-assert_create "--entrypoint /usr/local/bin/start-codex-session local/codex-sandbox-networked:2.0.2 bash" "Codex shell forwards bash"
+assert_create "--entrypoint /usr/local/bin/start-codex-session local/codex-sandbox-networked:3.0.0 bash" "Codex shell forwards bash"
 
 record_codex_command "exec" codex-task task cmd_exec "$slug" -- git status
 assert_create "target=/auth,readonly" "Codex exec keeps authentication read-only"
-assert_create "--entrypoint /usr/local/bin/start-codex-session local/codex-sandbox-networked:2.0.2 git status" "Codex exec forwards the command"
+assert_create "--entrypoint /usr/local/bin/start-codex-session local/codex-sandbox-networked:3.0.0 git status" "Codex exec forwards the command"
 
 # --- Codex authentication family: auth writable, workspace absent -----------
 record_codex_command "login" codex-login auth cmd_login "$slug"
@@ -344,14 +338,14 @@ assert_create "type=volume,source=codex-sbx-${slug}-auth-v2,target=/auth " \
   "Codex login mounts authentication read-write"
 assert_create "target=/auth,readonly" "Codex login never mounts authentication read-only" absent
 assert_create "target=/workspace" "Codex login never mounts the workspace" absent
-assert_create "--entrypoint /usr/local/bin/start-codex-auth-session local/codex-sandbox-networked:2.0.2 codex login --device-auth" \
+assert_create "--entrypoint /usr/local/bin/start-codex-auth-session local/codex-sandbox-networked:3.0.0 codex login --device-auth" \
   "Codex login uses the authentication entrypoint"
 
 record_codex_command "auth-status" codex-status auth cmd_auth_status "$slug"
 assert_create "target=/auth,readonly" \
   "Codex auth-status mounts authentication read-only"
 assert_create "target=/workspace" "Codex auth-status never mounts the workspace" absent
-assert_create "--entrypoint /usr/local/bin/start-codex-auth-session local/codex-sandbox-networked:2.0.2 codex login status" \
+assert_create "--entrypoint /usr/local/bin/start-codex-auth-session local/codex-sandbox-networked:3.0.0 codex login status" \
   "Codex auth-status uses the authentication entrypoint"
 
 record_codex_command "logout" codex-login auth cmd_logout "$slug"
@@ -359,16 +353,11 @@ assert_create "type=volume,source=codex-sbx-${slug}-auth-v2,target=/auth " \
   "Codex logout mounts authentication read-write"
 assert_create "target=/auth,readonly" \
   "Codex logout never mounts authentication read-only" absent
-assert_create "--entrypoint /usr/local/bin/start-codex-auth-session local/codex-sandbox-networked:2.0.2 codex logout" \
+assert_create "--entrypoint /usr/local/bin/start-codex-auth-session local/codex-sandbox-networked:3.0.0 codex logout" \
   "Codex logout uses the authentication entrypoint"
 
-# --- Offline family: no OpenCode executable temporary storage --------------
-record_codex_command "offline" offline none cmd_offline "$slug" -- true
-assert_create "BUN_TMPDIR" "offline container does not receive OpenCode Bun tmpdir" absent
-assert_create "/run/opencode-bun-tmp" "offline container does not receive executable OpenCode tmpfs" absent
-
 # --- Static negative mutations of Codex entrypoint structure ----------------
-codex_image='local/codex-sandbox-networked:2.0.2'
+codex_image='local/codex-sandbox-networked:3.0.0'
 assert_rejected_entrypoint_mutation "missing Codex --entrypoint" task \
   "create --name probe $codex_image codex"
 assert_rejected_entrypoint_mutation "post-image Codex --entrypoint" task \
@@ -382,7 +371,7 @@ assert_rejected_entrypoint_mutation "duplicate Codex --entrypoint" task \
 
 # --- Backward compatibility: legacy project.env without OpenCode keys -------
 legacy_slug="legacy-probe"
-mkdir -p "$ws/$legacy_slug"/{repo/.git,inbox,outbox,scratch,control/logs}
+mkdir -p "$ws/$legacy_slug"/{repo/.git,context,data,control/logs}
 printf 'PROJECT_SLUG=%s\nPROJECT_CPUS=2\nPROJECT_MEMORY=4g\n' "$legacy_slug" \
   > "$ws/$legacy_slug/control/project.env"
 record_command "legacy project.env exec-opencode" task cmd_exec_opencode "$legacy_slug" -- true
@@ -390,6 +379,21 @@ assert_create "--entrypoint /usr/local/bin/start-opencode-session $opencode_imag
   "existing project.env without PROJECT_OPENCODE_IMAGE works with the default image"
 
 # --- Concurrency locking ----------------------------------------------------
+for mutation in CONTEXT_WRITABLE EXTRA_MOUNT; do
+  for command in cmd_exec cmd_exec_opencode; do
+    mode=task
+    [[ "$command" == cmd_exec ]] && mode=codex-task
+    if env "$mutation=true" CALLLOG="$work/calls.txt" WS="$ws" \
+      LIB="$work/sandboxctl-lib.sh" ROOT="$root" MOUNTS_MODE="$mode" \
+      bash "$work/harness.sh" "$command" "$slug" -- true >"$work/out" 2>"$work/err"; then
+      fail "$command accepted mount mutation: $mutation"
+    fi
+    grep -q 'container mount allowlist mismatch' "$work/err" \
+      || fail "$command did not identify mount mutation: $mutation"
+  done
+done
+echo 'PASS: both agents reject writable context and unexpected mounts before startup'
+
 mkdir -p "$proj/control/.session-lock"
 printf 'agent=codex\npid=%d\nstarted=x\n' "$$" > "$proj/control/.session-lock/owner.txt"
 

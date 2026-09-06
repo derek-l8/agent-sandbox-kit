@@ -108,30 +108,57 @@ agent credential from repository code, or preservation of the writable tree.
 See the [operator guide](docs/OPERATOR-GUIDE.md) and
 [security reference](docs/MAINTAINER-SECURITY.md).
 
-## Advanced shared commands and legacy compatibility
+## Files outside Git
 
-`bin/sbx` is a small argument-preserving wrapper around `bin/sandboxctl`; it
-contains no container or security logic. Agent-specific public usage always
-uses `sbx <agent> <action> <project>`. The original launcher routes below are
-retained only as legacy compatibility aliases so existing automation does not
-break:
+Each project lives entirely in WSL under `~/agent-workspaces/<project>`:
+
+| Host folder | Container path | Agent access |
+| --- | --- | --- |
+| `repo/` | `/workspace` | Writable; `.git` stays read-only |
+| `context/` | `/context` | Read-only reference files |
+| `data/` | `/data` | Writable, persistent outputs and state |
+| `control/` | Not mounted | Host configuration and reports |
+
+In Windows Explorer, select files and use **Copy as path**. In WSL run:
 
 ```bash
-bin/sandboxctl --help
-bin/sandboxctl run <project>
-bin/sandboxctl run-opencode <project>
-bin/sandboxctl offline <project> -- <command>
-bin/sandboxctl package <project>
-bin/sandboxctl auth-status <project>
-bin/sandboxctl auth-status-opencode <project>
+sbx context my-project
 ```
 
-For an installed kit, the compatibility launcher is at
-`${XDG_DATA_HOME:-$HOME/.local/share}/agent-sandbox-kit/bin/sandboxctl`.
+Paste the quoted paths, one per line, then enter a blank line. The command
+copies the files into WSL and prints their `/context/...` paths. Windows
+originals are untouched; no Windows folder is mounted into the container.
+
+You can also import WSL paths and manage copies explicitly:
+
+```bash
+sbx context my-project add '/path/to/Plan.pdf' '/path/to/image.png'
+sbx context my-project list
+sbx context my-project remove 'Plan.pdf'
+```
+
+Replacement requires confirmation. Removal deletes only the named imported
+copy. Imports and removals refuse to run while a project task is active.
+Both agents receive guidance about `/context` and `/data`; document parsing
+and viewing depend on the harness's available tools.
+
+Neither folder is in the Git working tree: `git add .` in `repo/` cannot stage
+them. An agent can still copy content into the repository. These files are
+accessible to a networked agent; outside Git does not mean isolated from the
+network. Back up important `/data` state separately from Git.
 
 The workspace root defaults to `$HOME/agent-workspaces`; set
-`CODEX_SANDBOX_WORKSPACES_ROOT` for another WSL location. Projects require a
-normal `.git` directory, so linked Git worktrees are not supported.
+`CODEX_SANDBOX_WORKSPACES_ROOT` to another WSL location. Linked Git worktrees
+are not supported.
+
+## Version 3 layout
+
+Version 3 removes the offline runner, packaging command, and implicit/suffixed
+legacy agent commands. Use `sbx <agent> <action> <project>` throughout.
+Existing old-layout projects are not automatically migrated or deleted.
+`sbx upgrade` updates image pins for the current layout; it is not a layout
+migration command. Initialize a new slug if an old layout is still present.
+Authentication schema v2 and its volume names remain unchanged.
 
 ## Tests
 

@@ -28,6 +28,7 @@ run_suite codex-auth-control-flow.sh
 run_suite launcher-boundaries.sh
 run_suite adapter-conformance.sh
 run_suite sbx-cli.sh
+run_suite context.sh
 run_suite install.sh
 run_suite upgrade.sh
 run_suite auth-compatibility.sh
@@ -56,7 +57,7 @@ assertions = {
     "no MCP servers": lambda c: c.get("mcp") == {},
     "loopback-only server without mdns": lambda c: c.get("server", {}).get("hostname") == "127.0.0.1"
         and c.get("server", {}).get("mdns") is False,
-    "external directories denied": lambda c: c.get("permission", {}).get("external_directory") == "deny",
+    "only context and data external directories allowed": lambda c: c.get("permission", {}).get("external_directory") == {"*": "deny", "/context": "allow", "/context/*": "allow", "/data": "allow", "/data/*": "allow"},
 }
 for label, check in assertions.items():
     if not check(config):
@@ -128,7 +129,7 @@ if not common or tmp not in " ".join(line.strip() for line in common.group(1).sp
 if len(opencode) != 2 or any(bun_mount not in line or bun_env not in line for line in opencode):
     raise SystemExit("every OpenCode task/auth path must receive the exact Bun tmpfs and BUN_TMPDIR")
 if any("BUN_TMPDIR" in line or "/run/opencode-bun-tmp" in line for line in other):
-    raise SystemExit("Codex/offline path receives OpenCode executable temporary storage")
+    raise SystemExit("Codex path receives OpenCode executable temporary storage")
 if any("target=/run/opencode-bun-tmp" in line for line in opencode):
     raise SystemExit("Bun tmpdir is backed by a volume or bind mount")
 print("PASS: /tmp is noexec; only both OpenCode paths receive the private executable Bun tmpfs")
@@ -149,7 +150,7 @@ done
 
 # OPENCODE_DISABLE_PROJECT_CONFIG=1 must be present on every OpenCode container
 # creation path in the launcher (task sessions AND authentication containers),
-# and on no Codex/offline path.
+# and on no Codex path.
 python3 - "$root/bin/sandboxctl" <<'PY'
 import re
 import sys
@@ -254,7 +255,7 @@ echo "PASS: no instruction-guard, polling, or kernel-enforcement mechanisms are 
   || fail "unsupported flag found"
 
 # Naming taxonomy: agent implementations are explicit, shared boundary pieces
-# remain neutral, and the pre-2.0.2 generic Codex names may not return.
+# remain neutral, and the pre-3.0.0 generic Codex names may not return.
 [[ ! -e "$root/tests/smoke.sh" ]] \
   || fail "tests/smoke.sh returned; the Codex smoke test is smoke-codex.sh"
 for required in \
@@ -267,6 +268,7 @@ for required in \
   [[ -f "$root/$required" ]] || fail "agent-specific file is missing or ambiguously named: $required"
 done
 for obsolete in \
+  images/offline.Dockerfile container/check-offline.sh container/start-offline-session.sh \
   images/networked.Dockerfile config/config.toml config/requirements.toml \
   container/check-networked.sh container/check-login.sh \
   container/run-with-project-auth.sh container/start-auth-session.sh \
@@ -275,9 +277,9 @@ for obsolete in \
   [[ ! -e "$root/$obsolete" ]] || fail "ambiguous agent-specific filename returned: $obsolete"
 done
 for shared in \
-  images/offline.Dockerfile container/check-common.sh \
-  container/check-offline.sh container/prune-auth-volume.sh \
-  container/start-offline-session.sh tests/smoke-safety.sh; do
+  container/check-common.sh \
+  container/prune-auth-volume.sh \
+  tests/smoke-safety.sh; do
   [[ -f "$root/$shared" ]] || fail "shared component was incorrectly classified as agent-specific: $shared"
 done
 ! grep -RInF 'tests/smoke.sh' "$root/README.md" "$root/docs" >/dev/null \

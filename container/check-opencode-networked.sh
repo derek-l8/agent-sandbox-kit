@@ -14,8 +14,8 @@ fi
 
 expect_mount_mode /workspace rw "project workspace is writable"
 expect_mount_mode /workspace/.git ro "Git metadata is read-only"
-expect_mount_mode /agent/outbox rw "review outbox is writable"
-expect_mount_mode /agent/scratch rw "public scratch is writable"
+expect_mount_mode /data rw "persistent data is writable"
+expect_mount_mode /context ro "supplied context is read-only"
 expect_mount_mode /home/node/.local/state rw "disposable XDG state is writable tmpfs"
 expect_mount_mode /home/node/.local/share/opencode rw "ephemeral OpenCode state is writable"
 expect_mount_mode /tmp noexec "general temporary storage is non-executable"
@@ -32,7 +32,6 @@ else
   fail "BUN_TMPDIR is not a private, user-owned dedicated tmpfs"
 fi
 expect_mount_mode /auth ro "project authentication store is mounted read-only in sessions"
-expect_absent /agent/inbox "private inbox is absent"
 
 if [[ -r /etc/opencode/opencode.json && ! -w /etc/opencode/opencode.json ]]; then
   pass "managed OpenCode configuration is root-owned/read-only"

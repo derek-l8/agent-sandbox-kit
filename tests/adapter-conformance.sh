@@ -15,10 +15,10 @@ for agent in "${SBX_AGENTS[@]}"; do
       || { printf 'FAIL: %s lacks %s\n' "$agent" "$field" >&2; exit 1; }
   done
   for action in run login doctor shell exec; do
-    legacy="$(sbx_adapter_legacy_command "$agent" "$action")"
+    legacy="$(sbx_adapter_handler "$agent" "$action")"
     [[ -n "$legacy" ]] \
       || { printf 'FAIL: %s lacks %s behavior\n' "$agent" "$action" >&2; exit 1; }
-    grep -qE "^[[:space:]]+${legacy//-/\\-}\) cmd_" "$root/bin/sandboxctl" \
+    grep -qE "^${legacy}\(\)" "$root/bin/sandboxctl" \
       || { printf 'FAIL: %s route targets missing sandboxctl command %s\n' "$agent" "$legacy" >&2; exit 1; }
   done
   grep -qE "^${SBX_ADAPTER_CONFIG_VALIDATOR[$agent]}\(\)" "$root/bin/sandboxctl" \

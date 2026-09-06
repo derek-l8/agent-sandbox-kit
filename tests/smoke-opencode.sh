@@ -10,7 +10,7 @@
 #   - the real authentication container passes its boundary checks without
 #     requiring any login;
 #   - task authentication is read-only, login authentication is writable;
-#   - project/.git/outbox/scratch/tmpfs/resource/security/network/forbidden-
+#   - project/.git/data/data/tmpfs/resource/security/network/forbidden-
 #     mount assertions match the launcher policy;
 #   - /etc/opencode/opencode.json is actually loaded (`opencode debug config
 #     --pure`) and resolves autoupdate/sharing/snapshot/MCP/server/external-
@@ -94,6 +94,7 @@ pass "pinned image $IMAGE matches every versions.lock value"
 
 # --- Synthetic disposable project -------------------------------------------
 "$ctl" init "$slug" >/dev/null
+printf "reference\n" > "$proj/context/reference.txt"
 mkdir -p "$proj/repo/.git"
 
 # Hostile repository configuration and plugin markers: both MUST be inert.
@@ -104,7 +105,7 @@ printf '%s\n' 'export const HOSTILE_PLUGIN = "HOSTILE-OPENCODE-PLUGIN-MARKER"' \
   > "$proj/repo/.opencode/plugin/hostile.ts"
 
 # --- doctor-opencode ---------------------------------------------------------
-doctor_out="$("$ctl" doctor-opencode "$slug")"
+doctor_out="$("$ctl" opencode doctor "$slug")"
 grep -q '^RESULT: project doctor passed (opencode)$' <<<"$doctor_out" \
   || failclosed "doctor-opencode did not print a passing result line"
 pass "doctor-opencode passed"
@@ -131,7 +132,7 @@ assert_report() {
 # --- Task session probe: boundaries, version, resources, shadowing ----------
 task_probe='
 set -euo pipefail
-out=/agent/outbox
+out=/data
 opencode --version >"$out/version.txt" 2>&1
 grep -q 1.18.21 "$out/version.txt"
 
@@ -145,8 +146,10 @@ test -z "${SSH_AUTH_SOCK:-}"
 findmnt -n -T /auth -o OPTIONS >"$out/auth-options.txt"
 grep -qE "(^|,)ro(,|\$)" "$out/auth-options.txt"
 findmnt -n -T /workspace/.git -o OPTIONS | grep -qE "(^|,)ro(,|\$)"
-findmnt -n -T /agent/outbox -o OPTIONS | grep -qE "(^|,)rw(,|\$)"
-findmnt -n -T /agent/scratch -o OPTIONS | grep -qE "(^|,)rw(,|\$)"
+findmnt -n -T /data -o OPTIONS | grep -qE "(^|,)rw(,|\$)"
+test -r /context/reference.txt
+if touch /context/forbidden 2>/dev/null; then exit 1; fi
+findmnt -n -T /context -o OPTIONS | grep -qE "(^|,)ro(,|\$)"
 findmnt -n -T /home/node/.local/share/opencode >/dev/null
 findmnt -n -T /home/node/.config >/dev/null
 findmnt -n -T /home/node/.local/state >/dev/null
@@ -177,26 +180,26 @@ else
   printf "absent\n" >"$out/shadow.txt"
 fi
 '
-"${ctl}" exec-opencode "$slug" -- bash -c "$task_probe" >/dev/null
+"${ctl}" opencode exec "$slug" -- bash -c "$task_probe" >/dev/null
 pass "exec-opencode ran the task-session boundary probe (in-container checks included)"
 
-grep -q '1.18.21' "$proj/outbox/version.txt" || failclosed "opencode --version did not report 1.18.21"
+grep -q '1.18.21' "$proj/data/version.txt" || failclosed "opencode --version did not report 1.18.21"
 pass "opencode --version reports the pinned 1.18.21"
 
-grep -qx 'ro' <(tr ',' '\n' < "$proj/outbox/auth-options.txt" | sed '/^$/d') \
+grep -qx 'ro' <(tr ',' '\n' < "$proj/data/auth-options.txt" | sed '/^$/d') \
   || failclosed "task-session /auth is not mounted read-only"
 pass "task authentication volume is mounted read-only"
 
-[[ "$(cat "$proj/outbox/shadow.txt")" == "shadowed" ]] \
+[[ "$(cat "$proj/data/shadow.txt")" == "shadowed" ]] \
   || failclosed "repository .opencode directory was not shadowed"
 pass "repository .opencode directory is shadowed and empty"
 
-[[ "$(cat "$proj/outbox/pids.txt")" == "512" ]] \
-  || failclosed "pids limit is $(cat "$proj/outbox/pids.txt"), expected 512"
-[[ "$(cat "$proj/outbox/memory.txt")" == "8589934592" ]] \
-  || failclosed "memory limit is $(cat "$proj/outbox/memory.txt"), expected 8589934592 (8g)"
-[[ "$(cat "$proj/outbox/cpu.txt")" == *"600000 100000"* ]] \
-  || failclosed "cpu limit is '$(cat "$proj/outbox/cpu.txt")', expected '600000 100000' (6 cpus)"
+[[ "$(cat "$proj/data/pids.txt")" == "512" ]] \
+  || failclosed "pids limit is $(cat "$proj/data/pids.txt"), expected 512"
+[[ "$(cat "$proj/data/memory.txt")" == "8589934592" ]] \
+  || failclosed "memory limit is $(cat "$proj/data/memory.txt"), expected 8589934592 (8g)"
+[[ "$(cat "$proj/data/cpu.txt")" == *"600000 100000"* ]] \
+  || failclosed "cpu limit is '$(cat "$proj/data/cpu.txt")', expected '600000 100000' (6 cpus)"
 pass "resource limits match the launcher policy (512 pids, 8g, 6 cpus)"
 
 task_report="$(latest_report '-opencode-networked-host-check.txt')"
@@ -208,7 +211,7 @@ pass "host-side task report confirms the launcher security policy"
 # --- Real TUI startup under a PTY (no provider, prompt, or model) -----------
 tui_probe='
 set -euo pipefail
-out=/agent/outbox
+out=/data
 : >"$out/opencode-tui-libraries.txt"
 (
   while :; do
@@ -232,27 +235,27 @@ case "$rc" in 0|124|143) ;; *) exit "$rc" ;; esac
 sort -u "$out/opencode-tui-libraries.txt" -o "$out/opencode-tui-libraries.txt"
 grep -q "^/run/opencode-bun-tmp/.*\\.so$" "$out/opencode-tui-libraries.txt"
 '
-"${ctl}" exec-opencode "$slug" -- bash -c "$tui_probe" >/dev/null
-! grep -q 'Failed to initialize OpenTUI render library' "$proj/outbox/opencode-tui-output.txt" \
+"${ctl}" opencode exec "$slug" -- bash -c "$tui_probe" >/dev/null
+! grep -q 'Failed to initialize OpenTUI render library' "$proj/data/opencode-tui-output.txt" \
   || failclosed "real pinned OpenCode TUI failed to initialize OpenTUI"
-grep -q '^/run/opencode-bun-tmp/.*\.so$' "$proj/outbox/opencode-tui-libraries.txt" \
+grep -q '^/run/opencode-bun-tmp/.*\.so$' "$proj/data/opencode-tui-libraries.txt" \
   || failclosed "OpenTUI native library was not observed in the dedicated Bun tmpfs"
 pass "real pinned OpenCode TUI initialized under a PTY and extracted OpenTUI in BUN_TMPDIR"
 
 # --- Managed configuration resolution ---------------------------------------
 config_probe='
 set -euo pipefail
-out=/agent/outbox
+out=/data
 if ! opencode debug config --pure >"$out/debug-config.json" 2>"$out/debug-config.err"; then
   cat "$out/debug-config.err" >&2
   exit 7
 fi
 test -s "$out/debug-config.json"
 '
-"${ctl}" exec-opencode "$slug" -- bash -c "$config_probe" >/dev/null
+"${ctl}" opencode exec "$slug" -- bash -c "$config_probe" >/dev/null
 pass "opencode debug config --pure loaded /etc/opencode/opencode.json successfully"
 
-python3 - "$proj/outbox/debug-config.json" <<'PY'
+python3 - "$proj/data/debug-config.json" <<'PY'
 import json
 import sys
 
@@ -288,7 +291,7 @@ require("snapshots disabled", "snapshot", lambda v: v is False)
 require("no MCP servers configured", "mcp", lambda v: v == {})
 require("loopback-only server", "hostname", lambda v: v == "127.0.0.1")
 require("mdns disabled", "mdns", lambda v: v is False)
-require("external directories denied", "external_directory", lambda v: v == "deny")
+require("external directory allowlist", "external_directory", lambda v: v == {"*": "deny", "/context": "allow", "/context/*": "allow", "/data": "allow", "/data/*": "allow"})
 for pattern in ["git push*", "git commit*", "git remote*", "git submodule*", "gh *"]:
     require(f"bash restriction denied: {pattern}", pattern, lambda v: v == "deny")
 
@@ -296,7 +299,7 @@ print("PASS: hostile repository opencode.json sentinel is absent (project config
 PY
 
 # --- Authentication family (no login required) -------------------------------
-if ! status_out="$("${ctl}" auth-status-opencode "$slug" 2>&1)"; then
+if ! status_out="$("${ctl}" opencode auth-status "$slug" 2>&1)"; then
   printf '%s\n' "$status_out" >&2
   failclosed "auth-status-opencode failed before completing its boundary checks"
 fi
