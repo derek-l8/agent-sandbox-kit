@@ -25,8 +25,8 @@ below; Claude Code is not installed or implemented by this repository.
 Use the repository naming classes consistently: shared boundary infrastructure
 uses neutral `agent-sandbox` or generic names; an agent-specific adapter,
 Dockerfile, entrypoint, helper, test, report, variable, and message includes
-the agent ID; and any old route retained for compatibility is explicitly
-labeled legacy. Do not rename persistent volume names, image labels or tags,
+the agent ID. Register canonical actions to allowlisted `cmd_*` handlers;
+do not add implicit or suffixed legacy CLI routes. Do not rename persistent volume names, image labels or tags,
 or `project.env` keys without a tested automatic migration.
 
 ## Required security review
@@ -63,7 +63,7 @@ stub tests for every handler. Cover exact forwarding after `--`, image and
 entrypoint selection, allowed mounts and tmpfs, read-only task authentication,
 writable auth-only login, no workspace during login, lock sharing, stale
 cleanup, prune on success/failure/interruption, managed configuration, invalid
-configuration, and legacy-compatible `sandboxctl` aliases. Canonical public
+configuration, and rejection of unsupported CLI routes. Canonical public
 tests and documentation must invoke agent actions through
 `sbx <agent> <action> <project>`.
 

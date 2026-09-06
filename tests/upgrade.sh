@@ -12,13 +12,13 @@ make_project() {
   "$ctl" init "$slug" >/dev/null
   mkdir -p "$CODEX_SANDBOX_WORKSPACES_ROOT/$slug/repo/.git"
   sed -i \
-    -e "s/:2.0.2/:$version/g" \
+    -e "s/:3.0.0/:$version/g" \
     -e 's/PROJECT_CPUS=6/PROJECT_CPUS=3/' \
     -e 's/PROJECT_MEMORY=8g/PROJECT_MEMORY=4096m/' \
     "$CODEX_SANDBOX_WORKSPACES_ROOT/$slug/control/project.env"
   printf 'policy.txt\n' > "$CODEX_SANDBOX_WORKSPACES_ROOT/$slug/control/protected-paths.txt"
   printf 'preserve\n' > "$CODEX_SANDBOX_WORKSPACES_ROOT/$slug/repo/policy.txt"
-  printf 'data\n' > "$CODEX_SANDBOX_WORKSPACES_ROOT/$slug/scratch/data"
+  printf 'data\n' > "$CODEX_SANDBOX_WORKSPACES_ROOT/$slug/data/data"
 }
 
 for version in 2.0.0 2.0.1; do
@@ -29,12 +29,12 @@ for version in 2.0.0 2.0.1; do
   "$ctl" upgrade --dry-run "$slug" | grep -q 'Dry run: no files changed.'
   [[ "$before" == "$(sha256sum "$config")" ]]
   "$ctl" upgrade "$slug" >/dev/null
-  grep -q ':2.0.2$' "$config"
+  grep -q ':3.0.0$' "$config"
   grep -q '^PROJECT_CPUS=3$' "$config"
   grep -q '^PROJECT_MEMORY=4096m$' "$config"
   grep -q '^PROJECT_SLUG='"$slug"'$' "$config"
   grep -qx policy.txt "$CODEX_SANDBOX_WORKSPACES_ROOT/$slug/control/protected-paths.txt"
-  grep -qx data "$CODEX_SANDBOX_WORKSPACES_ROOT/$slug/scratch/data"
+  grep -qx data "$CODEX_SANDBOX_WORKSPACES_ROOT/$slug/data/data"
   compgen -G "$config.pre-upgrade-*.bak" >/dev/null
   backup_count="$(find "$(dirname "$config")" -maxdepth 1 -name 'project.env.pre-upgrade-*.bak' | wc -l)"
   "$ctl" upgrade "$slug" | grep -q 'already current'

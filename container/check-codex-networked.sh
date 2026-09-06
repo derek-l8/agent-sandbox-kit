@@ -14,11 +14,10 @@ fi
 
 expect_mount_mode /workspace rw "project workspace is writable"
 expect_mount_mode /workspace/.git ro "Git metadata is read-only"
-expect_mount_mode /agent/outbox rw "review outbox is writable"
-expect_mount_mode /agent/scratch rw "public scratch is writable"
+expect_mount_mode /data rw "persistent data is writable"
+expect_mount_mode /context ro "supplied context is read-only"
 expect_mount_mode /home/node/.codex rw "ephemeral Codex home is writable"
 expect_mount_mode /auth ro "project authentication store is read-only"
-expect_absent /agent/inbox "private inbox is absent"
 
 if [[ -r /etc/codex/config.toml && ! -w /etc/codex/config.toml ]]; then
   pass "system Codex config is root-owned/read-only"

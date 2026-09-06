@@ -27,6 +27,7 @@ Usage:
   sbx upgrade [--dry-run] <project>
   sbx build
   sbx version
+  sbx context <project> [add [paths...] | list | remove <names...>]
 
 Agents: codex, opencode
 Actions: run, login, auth-status, logout, doctor, shell, exec, reset-auth
@@ -36,7 +37,8 @@ Examples:
   sbx opencode login my-project
   sbx codex exec my-project -- npm test
 
-Run bin/sandboxctl --help for advanced and compatibility commands.
+With no context action, paste Windows Copy as path values, one per line.
+Finish with a blank line. Context is read-only; /data is writable outside Git.
 EOF
 }
 
@@ -44,21 +46,21 @@ main() {
   local first="${1:-}"
   case "$first" in
     help|-h|--help|'') usage; [[ -n "$first" ]] || return 2; return 0 ;;
-    init|build|upgrade|version)
+    init|build|upgrade|version|context)
       shift
       exec "$SBX_CTL" "$first" "$@"
       ;;
   esac
 
-  local agent="$first" action="${2:-}" legacy
+  local agent="$first" action="${2:-}" handler
   sbx_adapter_is_registered "$agent" \
     || die "unknown agent: ${agent:-<missing>} (expected: ${SBX_AGENTS[*]})"
   [[ -n "$action" ]] || die "missing action for agent $agent"
-  legacy="$(sbx_adapter_legacy_command "$agent" "$action")"
-  [[ -n "$legacy" ]] \
+  handler="$(sbx_adapter_handler "$agent" "$action")"
+  [[ -n "$handler" ]] \
     || die "invalid action '$action' for agent '$agent' (expected: ${SBX_ADAPTER_ACTIONS[$agent]})"
   shift 2
-  exec "$SBX_CTL" "$legacy" "$@"
+  exec "$SBX_CTL" "$agent" "$action" "$@"
 }
 
 main "$@"

@@ -9,7 +9,13 @@
     "mdns": false
   },
   "permission": {
-    "external_directory": "deny",
+    "external_directory": {
+      "*": "deny",
+      "/context": "allow",
+      "/context/*": "allow",
+      "/data": "allow",
+      "/data/*": "allow"
+    },
     "bash": {
       "git push*": "deny",
       "git commit*": "deny",
@@ -17,5 +23,8 @@
       "git submodule*": "deny",
       "gh *": "deny"
     }
-  }
+  },
+  "instructions": [
+    "/etc/agent-workspace.md"
+  ]
 }

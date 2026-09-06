@@ -19,7 +19,7 @@ sed '$d' "$root/bin/sandboxctl" > "$work/sandboxctl-lib.sh"
 
 slug="control-flow-probe"
 ws="$work/workspaces"
-mkdir -p "$ws/$slug"/{repo/.git,inbox,outbox,scratch,control/logs}
+mkdir -p "$ws/$slug"/{repo/.git,context,data,control/logs}
 printf 'PROJECT_SLUG=%s\nPROJECT_CPUS=4\nPROJECT_MEMORY=8g\n' "$slug" \
   > "$ws/$slug/control/project.env"
 
@@ -85,11 +85,7 @@ docker() {
           *codex.package-integrity*) echo "$CODEX_PACKAGE_INTEGRITY" ;;
           *codex.linux-x64-integrity*) echo "$CODEX_LINUX_X64_INTEGRITY" ;;
           *mode*)
-            if [[ "$img" == *offline* ]]; then
-              echo "offline-private-test"
-            else
-              echo "networked-public"
-            fi ;;
+            echo "networked-public" ;;
           *) echo "" ;;
         esac
       fi
@@ -104,8 +100,8 @@ docker() {
         '{{json .HostConfig.Devices}}'|'{{json .HostConfig.PortBindings}}') echo "null" ;;
         '{{range .Mounts}}{{printf "%s|%s|%t\n" .Destination .Type .RW}}{{end}}')
           printf '%s\n' \
-            '/agent/outbox|bind|true' \
-            '/agent/scratch|bind|true' \
+            '/data|bind|true' \
+            '/context|bind|false' \
             '/auth|volume|false' \
             '/workspace|bind|true' \
             '/workspace/.git|bind|false' ;;

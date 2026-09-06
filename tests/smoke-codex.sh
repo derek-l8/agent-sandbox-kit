@@ -26,17 +26,11 @@ docker info >/dev/null 2>&1 || { echo 'ERROR: Docker daemon is unavailable' >&2;
 "$ctl" init "$slug" >/dev/null
 mkdir -p "$project_root/repo/.git"
 
-printf 'synthetic-private-fixture\n' > "$project_root/inbox/smoke-private.txt"
-
-"$ctl" doctor "$slug"
-
-"$ctl" exec "$slug" -- bash -lc \
-  'set -euo pipefail; test "$(codex --version | awk '\''{print $2}'\'')" = "0.148.0"; test ! -e "$CODEX_HOME/config.toml"; codex --strict-config --disable apps --disable remote_plugin --help >/tmp/codex-help.txt; codex features list >/tmp/features.txt; printf "networked-smoke-ok\n" > /agent/scratch/networked-smoke.txt'
-
-"$ctl" offline "$slug" -- bash -lc \
-  'set -euo pipefail; test -d /workspace/.git; test -f /agent/inbox/smoke-private.txt; ! command -v codex >/dev/null 2>&1; printf "offline-smoke-ok\n" > /agent/outbox/offline-smoke.txt'
-
-test "$(cat "$project_root/scratch/networked-smoke.txt")" = 'networked-smoke-ok'
-test "$(cat "$project_root/outbox/offline-smoke.txt")" = 'offline-smoke-ok'
-
+printf 'reference\n' > "$project_root/context/reference.txt"
+"$ctl" codex doctor "$slug"
+"$ctl" codex exec "$slug" -- bash -lc \
+  'set -euo pipefail; test -r /context/reference.txt; if touch /context/forbidden 2>/dev/null; then exit 1; fi; test ! -e "$CODEX_HOME/config.toml"; codex --strict-config --disable apps --disable remote_plugin --help >/tmp/codex-help.txt; codex features list >/tmp/features.txt; printf "persistent\n" > /data/state.txt'
+"$ctl" codex exec "$slug" -- bash -lc \
+  'set -euo pipefail; test "$(cat /data/state.txt)" = persistent; test "$(cat /context/reference.txt)" = reference'
+test "$(cat "$project_root/data/state.txt")" = persistent
 printf 'RESULT: Codex Docker smoke tests passed without authentication or a model invocation\n'

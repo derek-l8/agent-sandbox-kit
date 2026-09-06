@@ -28,26 +28,28 @@ assert_output() {
 }
 
 for spec in \
-  'codex run run' 'codex login login' 'codex auth-status auth-status' \
-  'codex logout logout' 'codex doctor doctor' \
-  'codex shell shell' 'codex exec exec' \
-  'opencode run run-opencode' 'opencode login login-opencode' \
-  'opencode auth-status auth-status-opencode' 'opencode logout logout-opencode' \
-  'opencode doctor doctor-opencode' 'opencode shell shell-opencode' \
-  'opencode exec exec-opencode'; do
-  read -r agent action legacy <<< "$spec"
-  assert_output "<$legacy>
+  'codex run' 'codex login' 'codex auth-status' \
+  'codex logout' 'codex doctor' 'codex reset-auth' \
+  'codex shell' 'codex exec' \
+  'opencode run' 'opencode login' \
+  'opencode auth-status' 'opencode logout' 'opencode reset-auth' \
+  'opencode doctor' 'opencode shell' 'opencode exec'; do
+  read -r agent action <<< "$spec"
+  assert_output "<$agent>
+<$action>
 <probe>" "$agent" "$action" probe
 done
-printf 'PASS: all public agent/action routes translate to compatibility commands\n'
+printf 'PASS: all public agent/action routes forward canonical commands\n'
 
-assert_output '<exec>
+assert_output '<codex>
+<exec>
 <probe>
 <-->
 <bash>
 <-lc>
 <printf "%s %s" one two>' codex exec probe -- bash -lc 'printf "%s %s" one two'
-assert_output '<exec-opencode>
+assert_output '<opencode>
+<exec>
 <probe>
 <-->
 <command with spaces>
@@ -75,8 +77,10 @@ for bad in 'claude run probe' 'codex fly probe' 'opencode destroy probe'; do
 done
 printf 'PASS: unknown agents and actions fail clearly\n'
 
-# The original entrypoint remains executable and dispatches help itself.
-compat="$($root/bin/sandboxctl --help)"
-[[ "$compat" == *'Usage: sandboxctl <command>'* && "$compat" == *'run-opencode'* ]] \
-  || { echo 'FAIL: sandboxctl compatibility help changed' >&2; exit 1; }
-printf 'PASS: bin/sandboxctl remains directly usable\n'
+for command in run run-opencode offline package; do
+  if "$root/bin/sandboxctl" "$command" probe >"$work/out" 2>"$work/err"; then
+    echo "FAIL: removed command accepted: $command" >&2; exit 1
+  fi
+  grep -q 'unknown agent or command' "$work/err"
+done
+printf 'PASS: removed commands are rejected by the launcher\n'

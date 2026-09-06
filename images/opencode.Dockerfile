@@ -9,6 +9,9 @@ ARG BASE_IMAGE
 
 USER root
 
+COPY config/agent-workspace.md /etc/agent-workspace.md
+RUN chmod 0444 /etc/agent-workspace.md
+
 RUN test "$(npm view "opencode-ai@${OPENCODE_VERSION}" dist.integrity)" = "${OPENCODE_PACKAGE_INTEGRITY}" \
     && test "$(npm view "opencode-linux-x64@${OPENCODE_VERSION}" dist.integrity)" = "${OPENCODE_LINUX_X64_INTEGRITY}" \
     && npm install --global "opencode-ai@${OPENCODE_VERSION}" \

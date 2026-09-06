@@ -11,7 +11,7 @@ declare -Ag SBX_ADAPTER_EXECUTABLE=()
 declare -Ag SBX_ADAPTER_AUTH=()
 declare -Ag SBX_ADAPTER_CONFIG_VALIDATOR=()
 declare -Ag SBX_ADAPTER_ACTIONS=()
-declare -Ag SBX_ADAPTER_LEGACY_COMMAND=()
+declare -Ag SBX_ADAPTER_HANDLER=()
 
 register_sbx_agent() {
   local id="$1" display="$2" image_key="$3" version_key="$4"
@@ -34,19 +34,19 @@ register_sbx_agent() {
 }
 
 register_sbx_route() {
-  local agent="$1" action="$2" legacy_command="$3"
+  local agent="$1" action="$2" handler="$3"
   [[ -n "${SBX_ADAPTER_DISPLAY[$agent]+x}" ]] || return 1
   [[ " ${SBX_ADAPTER_ACTIONS[$agent]} " == *" $action "* ]] || return 1
-  [[ "$legacy_command" =~ ^[a-z][a-z-]*$ ]] || return 1
-  SBX_ADAPTER_LEGACY_COMMAND["$agent:$action"]="$legacy_command"
+  [[ "$handler" =~ ^cmd_[a-z_]+$ ]] || return 1
+  SBX_ADAPTER_HANDLER["$agent:$action"]="$handler"
 }
 
 sbx_adapter_is_registered() {
   [[ -n "${SBX_ADAPTER_DISPLAY[$1]+x}" ]]
 }
 
-sbx_adapter_legacy_command() {
-  printf '%s' "${SBX_ADAPTER_LEGACY_COMMAND["$1:$2"]-}"
+sbx_adapter_handler() {
+  printf '%s' "${SBX_ADAPTER_HANDLER["$1:$2"]-}"
 }
 
 sbx_validate_registry() {
@@ -60,7 +60,7 @@ sbx_validate_registry() {
     [[ -n "${SBX_ADAPTER_AUTH[$agent]}" ]]
     [[ -n "${SBX_ADAPTER_CONFIG_VALIDATOR[$agent]}" ]]
     for action in ${SBX_ADAPTER_ACTIONS[$agent]}; do
-      [[ -n "${SBX_ADAPTER_LEGACY_COMMAND["$agent:$action"]-}" ]] || return 1
+      [[ -n "${SBX_ADAPTER_HANDLER["$agent:$action"]-}" ]] || return 1
     done
   done
 }
