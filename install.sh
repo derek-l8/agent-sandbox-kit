@@ -52,6 +52,8 @@ for item in "${runtime_items[@]}"; do
 done
 
 for required in \
+  container/install-toolchain.sh \
+  adapters/claude.sh config/claude-managed.json images/claude.Dockerfile container/check-claude-networked.sh container/check-claude-login.sh container/start-claude-session.sh container/start-claude-auth-session.sh container/run-with-claude-auth.sh container/prune-claude-auth-volume.sh \
   bin/sbx bin/sandboxctl bin/context.sh adapters/registry.sh adapters/codex.sh adapters/opencode.sh \
   config/agent-workspace.md config/codex-config.toml config/codex-requirements.toml config/opencode-managed.json \
   images/codex-networked.Dockerfile images/opencode.Dockerfile \

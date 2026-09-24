@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-for smoke in "$root/tests/smoke-codex.sh" "$root/tests/smoke-opencode.sh"; do
+for smoke in "$root/tests/smoke-codex.sh" "$root/tests/smoke-opencode.sh" "$root/tests/smoke-claude.sh"; do
   grep -q 'ws="$(mktemp -d)"' "$smoke"
   grep -q 'export CODEX_SANDBOX_WORKSPACES_ROOT="$ws"' "$smoke"
-  grep -Eq 'slug="(codex|opencode)-smoke-.*\$\$"' "$smoke"
+  grep -Eq 'slug="(codex|opencode|claude)-smoke-.*\$\$"' "$smoke"
   grep -q 'trap cleanup EXIT INT TERM' "$smoke"
   ! grep -q 'sandbox-v2-test' "$smoke"
   ! grep -q '\$HOME/agent-workspaces' "$smoke"

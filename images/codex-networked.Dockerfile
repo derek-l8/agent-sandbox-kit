@@ -9,6 +9,18 @@ ARG BASE_IMAGE
 
 USER root
 
+COPY versions.lock /tmp/toolchain-versions.lock
+COPY container/install-toolchain.sh /tmp/install-toolchain.sh
+RUN bash /tmp/install-toolchain.sh && rm /tmp/install-toolchain.sh
+
+ENV UV_PYTHON_INSTALL_DIR=/data/python \
+    UV_PYTHON_BIN_DIR=/data/bin \
+    UV_PROJECT_ENVIRONMENT=/data/venv \
+    UV_TOOL_DIR=/data/uv-tools \
+    UV_TOOL_BIN_DIR=/data/bin \
+    UV_CACHE_DIR=/home/node/.cache/uv \
+    UV_LINK_MODE=copy
+
 RUN test "$(npm view "@openai/codex@${CODEX_VERSION}" dist.integrity)" = "${CODEX_PACKAGE_INTEGRITY}" \
     && test "$(npm view "@openai/codex@${CODEX_VERSION}-linux-x64" dist.integrity)" = "${CODEX_LINUX_X64_INTEGRITY}" \
     && npm install --global "@openai/codex@${CODEX_VERSION}" \

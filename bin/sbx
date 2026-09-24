@@ -29,7 +29,7 @@ Usage:
   sbx version
   sbx context <project> [add [paths...] | list | remove <names...>]
 
-Agents: codex, opencode
+Agents: codex, opencode, claude
 Actions: run, login, auth-status, logout, doctor, shell, exec, reset-auth
 
 Examples:

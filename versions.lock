@@ -1,13 +1,25 @@
 # Explicitly reviewed version inputs. Change these only through the upgrade procedure.
-KIT_VERSION=3.0.0
+KIT_VERSION=3.2.0
 AUTH_SCHEMA_VERSION=2
 BASE_IMAGE=mcr.microsoft.com/devcontainers/typescript-node:1-22-bookworm@sha256:7c2e711a4f7b02f32d2da16192d5e05aa7c95279be4ce889cff5df316f251c1d
 CODEX_VERSION=0.148.0
 CODEX_PACKAGE_INTEGRITY=sha512-bh5kH9+BMrFaHGmLeoSansPdfRksvr4UXzjQInns/KRO7r8VJ+6AAW+SqUsE8XcG3+OW/mI4EEy8Gpo9UDXGvQ==
 CODEX_LINUX_X64_INTEGRITY=sha512-uDT9s7AfMr9xLuJX3ZLVWHgHkUpCnZ33CZjZEdVQhrYCIErkDHsCW5TG290nNjaKngK0WxGt5uCcxeUHv9MWWA==
-NETWORK_IMAGE=local/codex-sandbox-networked:3.0.0
+NETWORK_IMAGE=local/codex-sandbox-networked:3.2.0
 # OpenCode adapter (side-by-side; integrity values resolved from registry.npmjs.org on 2026-08-22).
-OPENCODE_IMAGE=local/codex-sandbox-opencode:3.0.0
+OPENCODE_IMAGE=local/codex-sandbox-opencode:3.2.0
 OPENCODE_VERSION=1.18.21
 OPENCODE_PACKAGE_INTEGRITY=sha512-BxQyxpD0y2X0sXJUKLOooXVmi9QIoeKPtdH68r7QRiqXJ/YulK1MQvSe8KyA8183zoPV0G6JAtgz1OqmE3OGUw==
 OPENCODE_LINUX_X64_INTEGRITY=sha512-e7AegOOCksBHTuQ2YUg6J7UxYKMReN21wck52YbEUl2RJvcAnfAyl4sfB6y9QosAILXFl3853EXBbYj/8BljxQ==
+
+# Claude Code: npm metadata verified 2026-09-22.
+CLAUDE_IMAGE=local/codex-sandbox-claude:3.2.0
+CLAUDE_VERSION=2.1.280
+CLAUDE_PACKAGE_INTEGRITY=sha512-EZlX8jqNf+e7q9v+UoPbLYAbEGth7aDbcTytHzPYYohbP/fCfrjboCbcv85ZYGEq1Rq7Amm8hXLhuCKxLsabwA==
+CLAUDE_LINUX_X64_INTEGRITY=sha512-dJHWFrDSIZ26hdLucnK3ehLmzdzYl3MsPC1RzUctAUaYnZlH5kfAZxnK8qYRAQ89GX3OPrLsnFdt/QnP+0Ck6Q==
+
+# Shared toolchain: uv wheel from official PyPI metadata, verified 2026-09-23.
+PYTHON_VERSION=3.14.7
+UV_VERSION=0.12.18
+UV_WHEEL_URL=https://files.pythonhosted.org/packages/67/67/def11543e7bd3b4219ca29afd66f3accab641324bd2e426cb788083c56c5/uv-0.12.18-py3-none-manylinux_2_17_x86_64.manylinux2014_x86_64.whl
+UV_WHEEL_SHA256=fbe0489871e74ebfb70379a32526c62b9fb615acf13576b9f19bc09a142f62b0

@@ -29,7 +29,7 @@ read_versions() {
   while IFS='=' read -r key value; do
     [[ -z "$key" || "$key" == \#* ]] && continue
     case "$key" in
-      KIT_VERSION|AUTH_SCHEMA_VERSION|BASE_IMAGE|CODEX_VERSION|CODEX_PACKAGE_INTEGRITY|CODEX_LINUX_X64_INTEGRITY|NETWORK_IMAGE|OPENCODE_IMAGE|OPENCODE_VERSION|OPENCODE_PACKAGE_INTEGRITY|OPENCODE_LINUX_X64_INTEGRITY)
+      PYTHON_VERSION|UV_VERSION|UV_WHEEL_URL|UV_WHEEL_SHA256|CLAUDE_IMAGE|CLAUDE_VERSION|CLAUDE_PACKAGE_INTEGRITY|CLAUDE_LINUX_X64_INTEGRITY|KIT_VERSION|AUTH_SCHEMA_VERSION|BASE_IMAGE|CODEX_VERSION|CODEX_PACKAGE_INTEGRITY|CODEX_LINUX_X64_INTEGRITY|NETWORK_IMAGE|OPENCODE_IMAGE|OPENCODE_VERSION|OPENCODE_PACKAGE_INTEGRITY|OPENCODE_LINUX_X64_INTEGRITY)
         printf -v "$key" '%s' "$value"
         ;;
       *) die "unknown key in versions.lock: $key" ;;
@@ -37,7 +37,8 @@ read_versions() {
   done < "$VERSIONS_FILE"
   : "${KIT_VERSION:?}" "${AUTH_SCHEMA_VERSION:?}" "${BASE_IMAGE:?}" "${CODEX_VERSION:?}" \
     "${NETWORK_IMAGE:?}" \
-    "${OPENCODE_IMAGE:?}" "${OPENCODE_VERSION:?}"
+    "${OPENCODE_IMAGE:?}" "${OPENCODE_VERSION:?}" \
+    "${CLAUDE_IMAGE:?}" "${CLAUDE_VERSION:?}" "${CLAUDE_PACKAGE_INTEGRITY:?}" "${CLAUDE_LINUX_X64_INTEGRITY:?}"
 }
 
 project_root() {
@@ -56,11 +57,12 @@ load_project() {
   PROJECT_MEMORY='8g'
   PROJECT_NETWORK_IMAGE="$NETWORK_IMAGE"
   PROJECT_OPENCODE_IMAGE="$OPENCODE_IMAGE"
+  PROJECT_CLAUDE_IMAGE="$CLAUDE_IMAGE"
 
   while IFS='=' read -r key value; do
     [[ -z "$key" || "$key" == \#* ]] && continue
     case "$key" in
-      PROJECT_SLUG|PROJECT_CPUS|PROJECT_MEMORY|PROJECT_NETWORK_IMAGE|PROJECT_OPENCODE_IMAGE)
+      PROJECT_SLUG|PROJECT_CPUS|PROJECT_MEMORY|PROJECT_NETWORK_IMAGE|PROJECT_OPENCODE_IMAGE|PROJECT_CLAUDE_IMAGE)
         printf -v "$key" '%s' "$value"
         ;;
       *) die "unknown key in $PROJECT_CONFIG: $key" ;;
@@ -129,7 +131,7 @@ ensure_codex_images() {
 }
 
 project_images_are_stale() {
-  [[ "${PROJECT_NETWORK_IMAGE:-}" != "$NETWORK_IMAGE" || "${PROJECT_OPENCODE_IMAGE:-}" != "$OPENCODE_IMAGE" ]]
+  [[ "${PROJECT_NETWORK_IMAGE:-}" != "$NETWORK_IMAGE" || "${PROJECT_OPENCODE_IMAGE:-}" != "$OPENCODE_IMAGE" || "${PROJECT_CLAUDE_IMAGE:-}" != "$CLAUDE_IMAGE" ]]
 }
 
 image_missing() {
@@ -262,6 +264,8 @@ auth_recovery() {
   if [[ "$agent" == codex ]]; then
     printf 'Recovery (deletes only Codex saved login for project %s): sbx codex reset-auth %s --yes\nThen: sbx codex login %s\n' \
       "$PROJECT_SLUG" "$PROJECT_SLUG" "$PROJECT_SLUG" >&2
+  elif [[ "$agent" == claude ]]; then
+    printf 'Recovery: sbx claude reset-auth %s --yes\nThen: sbx claude login %s\n' "$PROJECT_SLUG" "$PROJECT_SLUG" >&2
   else
     printf 'Recovery (deletes only OpenCode saved login for project %s): sbx opencode reset-auth %s --yes\nThen: sbx opencode login %s\n' \
       "$PROJECT_SLUG" "$PROJECT_SLUG" "$PROJECT_SLUG" >&2
@@ -538,7 +542,7 @@ session_lock_dir() {
   printf '%s/%s' "$CONTROL_DIR" "$SESSION_LOCK_DIR_NAME"
 }
 
-# One session per project across both agents: Codex and OpenCode task
+# One session per project across Codex, OpenCode, and Claude Code task
 # commands share this lock so they can never run against the same working
 # tree at the same time.
 acquire_session_lock() {
@@ -571,7 +575,7 @@ acquire_session_lock() {
     acquire_session_lock "$agent"
     return
   fi
-  die "a session is already active for project '${PROJECT_SLUG}' (${owner:-unknown owner}); simultaneous Codex and OpenCode sessions for the same slug are not allowed"
+  die "a session is already active for project '${PROJECT_SLUG}' (${owner:-unknown owner}); simultaneous agent sessions for the same slug are not allowed"
 }
 
 # Remove leftover OpenCode task/login containers from a previous invocation,
@@ -755,9 +759,10 @@ cmd_version() {
   if [[ -f "$installed_root/versions.lock" ]]; then
     installed_version="$(sed -n 's/^KIT_VERSION=//p' "$installed_root/versions.lock" | head -n1)"
   fi
-  printf 'Kit version: %s\nRuntime root: %s\nRuntime kind: %s\nLauncher path: %s\nversions.lock: %s\nWorkspace root: %s\nNetwork image: %s\nOpenCode image: %s\n' \
+  printf 'Kit version: %s\nRuntime root: %s\nRuntime kind: %s\nLauncher path: %s\nversions.lock: %s\nWorkspace root: %s\nNetwork image: %s\nOpenCode image: %s\nClaude Code image: %s\n' \
     "$KIT_VERSION" "$KIT_ROOT" "$runtime_kind" "$launcher" "$VERSIONS_FILE" "$WORKSPACES_ROOT" \
-    "$NETWORK_IMAGE" "$OPENCODE_IMAGE"
+    "$NETWORK_IMAGE" "$OPENCODE_IMAGE" "$CLAUDE_IMAGE"
+  printf 'Default Python: %s\nuv: %s\n' "$PYTHON_VERSION" "$UV_VERSION"
   if [[ "$runtime_kind" == source ]]; then
     printf 'Installed runtime root: %s\nInstalled kit version: %s\n' "$installed_root" "$installed_version"
     if [[ "$installed_version" != missing && "$installed_version" != "$KIT_VERSION" ]]; then
@@ -784,6 +789,7 @@ write_project_config() {
     printf 'PROJECT_MEMORY=%s\n' "$PROJECT_MEMORY"
     printf 'PROJECT_NETWORK_IMAGE=%s\n' "$NETWORK_IMAGE"
     printf 'PROJECT_OPENCODE_IMAGE=%s\n' "$OPENCODE_IMAGE"
+    printf 'PROJECT_CLAUDE_IMAGE=%s\n' "$CLAUDE_IMAGE"
   } > "$destination"
   chmod 0600 "$destination"
 }
@@ -792,7 +798,7 @@ validate_upgraded_project() {
   local slug="$1"
   ( load_project "$slug" && ensure_project_layout \
     && [[ "$PROJECT_NETWORK_IMAGE" == "$NETWORK_IMAGE" \
-      && "$PROJECT_OPENCODE_IMAGE" == "$OPENCODE_IMAGE" ]] )
+      && "$PROJECT_OPENCODE_IMAGE" == "$OPENCODE_IMAGE" && "$PROJECT_CLAUDE_IMAGE" == "$CLAUDE_IMAGE" ]] )
 }
 
 cmd_upgrade() {
@@ -803,11 +809,11 @@ cmd_upgrade() {
   load_project "$slug"
   ensure_project_layout
   if session_is_active; then
-    die "cannot upgrade project '$slug' while a Codex or OpenCode task session is active"
+    die "cannot upgrade project '$slug' while an agent task session is active"
   fi
-  printf 'Project: %s\nCurrent images:\n  Codex networked: %s\n  OpenCode: %s\nProposed images:\n  Codex networked: %s\n  OpenCode: %s\n' \
-    "$slug" "$PROJECT_NETWORK_IMAGE" "$PROJECT_OPENCODE_IMAGE" \
-    "$NETWORK_IMAGE" "$OPENCODE_IMAGE"
+  printf 'Project: %s\nCurrent images:\n  Codex networked: %s\n  OpenCode: %s\n  Claude Code: %s\nProposed images:\n  Codex networked: %s\n  OpenCode: %s\n  Claude Code: %s\n' \
+    "$slug" "$PROJECT_NETWORK_IMAGE" "$PROJECT_OPENCODE_IMAGE" "$PROJECT_CLAUDE_IMAGE" \
+    "$NETWORK_IMAGE" "$OPENCODE_IMAGE" "$CLAUDE_IMAGE"
   if ! project_images_are_stale; then
     note 'Project configuration is already current; no changes made.'
     note "Next: sbx codex doctor $slug"
@@ -853,6 +859,7 @@ cmd_init() {
     printf 'PROJECT_MEMORY=8g\n'
     printf 'PROJECT_NETWORK_IMAGE=%s\n' "$NETWORK_IMAGE"
     printf 'PROJECT_OPENCODE_IMAGE=%s\n' "$OPENCODE_IMAGE"
+    printf 'PROJECT_CLAUDE_IMAGE=%s\n' "$CLAUDE_IMAGE"
   } > "$root/control/project.env"
   {
     printf '# One repository-relative path per line. Existing paths are mounted read-only.\n'
@@ -889,6 +896,17 @@ cmd_build() {
     --label "io.codex-sandbox.opencode.linux-x64-integrity=$OPENCODE_LINUX_X64_INTEGRITY" \
     -f "$KIT_ROOT/images/opencode.Dockerfile" \
     -t "$OPENCODE_IMAGE" "$KIT_ROOT"
+  note "Building pinned Claude Code image: $CLAUDE_IMAGE"
+  docker build \
+    --build-arg "BASE_IMAGE=$BASE_IMAGE" \
+    --build-arg "KIT_VERSION=$KIT_VERSION" \
+    --build-arg "CLAUDE_VERSION=$CLAUDE_VERSION" \
+    --build-arg "CLAUDE_PACKAGE_INTEGRITY=$CLAUDE_PACKAGE_INTEGRITY" \
+    --build-arg "CLAUDE_LINUX_X64_INTEGRITY=$CLAUDE_LINUX_X64_INTEGRITY" \
+    --label "io.codex-sandbox.claude.package-integrity=$CLAUDE_PACKAGE_INTEGRITY" \
+    --label "io.codex-sandbox.claude.linux-x64-integrity=$CLAUDE_LINUX_X64_INTEGRITY" \
+    -f "$KIT_ROOT/images/claude.Dockerfile" \
+    -t "$CLAUDE_IMAGE" "$KIT_ROOT"
 }
 
 cmd_doctor() {
@@ -1118,6 +1136,294 @@ cmd_doctor_opencode() {
   note "PASS: pinned OpenCode image, version $OPENCODE_VERSION, and integrity labels match"
   note "PASS: protected paths are valid"
   note "RESULT: project doctor passed (opencode)"
+}
+
+ensure_claude_images() {
+  docker image inspect "$PROJECT_CLAUDE_IMAGE" >/dev/null 2>&1 \
+    || image_missing "$PROJECT_CLAUDE_IMAGE"
+
+  local network_kit network_mode network_claude
+  local network_base network_package_integrity network_binary_integrity
+  network_kit="$(docker image inspect --format '{{index .Config.Labels "io.codex-sandbox.kit.version"}}' "$PROJECT_CLAUDE_IMAGE")"
+  network_mode="$(docker image inspect --format '{{index .Config.Labels "io.codex-sandbox.mode"}}' "$PROJECT_CLAUDE_IMAGE")"
+  network_claude="$(docker image inspect --format '{{index .Config.Labels "io.codex-sandbox.claude.version"}}' "$PROJECT_CLAUDE_IMAGE")"
+  network_base="$(docker image inspect --format '{{index .Config.Labels "io.codex-sandbox.base.image"}}' "$PROJECT_CLAUDE_IMAGE")"
+  network_package_integrity="$(docker image inspect --format '{{index .Config.Labels "io.codex-sandbox.claude.package-integrity"}}' "$PROJECT_CLAUDE_IMAGE")"
+  network_binary_integrity="$(docker image inspect --format '{{index .Config.Labels "io.codex-sandbox.claude.linux-x64-integrity"}}' "$PROJECT_CLAUDE_IMAGE")"
+
+  check_image_label "$PROJECT_CLAUDE_IMAGE" io.codex-sandbox.kit.version "$KIT_VERSION" "$network_kit"
+  check_image_label "$PROJECT_CLAUDE_IMAGE" io.codex-sandbox.mode networked-public "$network_mode"
+  check_image_label "$PROJECT_CLAUDE_IMAGE" io.codex-sandbox.claude.version "$CLAUDE_VERSION" "$network_claude"
+  check_image_label "$PROJECT_CLAUDE_IMAGE" io.codex-sandbox.base.image "$BASE_IMAGE" "$network_base"
+  check_image_label "$PROJECT_CLAUDE_IMAGE" io.codex-sandbox.claude.package-integrity "$CLAUDE_PACKAGE_INTEGRITY" "$network_package_integrity"
+  check_image_label "$PROJECT_CLAUDE_IMAGE" io.codex-sandbox.claude.linux-x64-integrity "$CLAUDE_LINUX_X64_INTEGRITY" "$network_binary_integrity"
+}
+
+claude_auth_volume_name() {
+  printf 'codex-sbx-%s-claude-auth-v2' "$PROJECT_SLUG"
+}
+
+ensure_claude_auth_volume() {
+  local volume
+  volume="$(claude_auth_volume_name)"
+  if ! docker volume inspect "$volume" >/dev/null 2>&1; then
+    docker volume create \
+      --label io.codex-sandbox.managed=true \
+      --label io.codex-sandbox.agent=claude \
+      --label "io.codex-sandbox.auth.schema=${AUTH_SCHEMA_VERSION}" \
+      --label "io.codex-sandbox.project=${PROJECT_SLUG}" \
+      --label "io.codex-sandbox.kit.version=${KIT_VERSION}" \
+      "$volume" >/dev/null
+  else
+    local managed agent project schema kit
+    managed="$(docker volume inspect --format '{{index .Labels "io.codex-sandbox.managed"}}' "$volume")"
+    agent="$(docker volume inspect --format '{{index .Labels "io.codex-sandbox.agent"}}' "$volume")"
+    project="$(docker volume inspect --format '{{index .Labels "io.codex-sandbox.project"}}' "$volume")"
+    schema="$(docker volume inspect --format '{{index .Labels "io.codex-sandbox.auth.schema"}}' "$volume")"
+    kit="$(docker volume inspect --format '{{index .Labels "io.codex-sandbox.kit.version"}}' "$volume")"
+    validate_auth_labels claude "$volume" "$managed" "$agent" "$project" "$schema" "$kit"
+  fi
+}
+
+prune_claude_auth_volume() {
+  local volume
+  volume="$(claude_auth_volume_name)"
+  docker volume inspect "$volume" >/dev/null 2>&1 || return 0
+  docker run --rm --network none --read-only --cap-drop ALL \
+    --security-opt no-new-privileges:true --pids-limit 64 --memory 256m \
+    --user node \
+    --mount "type=volume,source=${volume},target=/auth" \
+    --entrypoint /bin/bash "$PROJECT_CLAUDE_IMAGE" \
+    /usr/local/lib/codex-sandbox/prune-claude-auth-volume /auth \
+    >/dev/null
+}
+
+prepare_claude_command() {
+  ensure_claude_auth_volume
+  prune_claude_auth_volume
+}
+
+finish_claude() {
+  if ! prune_claude_auth_volume; then
+    printf 'ERROR: Claude Code authentication-volume cleanup failed for project %s; the auth volume may contain unexpected files. Inspect it or run: sbx claude reset-auth %s --yes\n' \
+      "$PROJECT_SLUG" "$PROJECT_SLUG" >&2
+    return 1
+  fi
+  return 0
+}
+
+run_claude_command() {
+  local create_fn="$1"
+  local interactive="$2"
+  shift 2
+  local exit_code=0 container_id=""
+  container_id="$("$create_fn" "$interactive" "$@")" || exit_code=$?
+  if [[ -n "$container_id" ]]; then
+    run_created_container "$container_id" "$interactive" || exit_code=$?
+  fi
+  if ! finish_claude; then
+    [[ "$exit_code" -ne 0 ]] || exit_code=1
+  fi
+  return "$exit_code"
+}
+
+create_claude_container() {
+  local interactive="$1"
+  shift
+  load_protected_mounts
+  ensure_claude_auth_volume
+  set_common_args
+  local stamp name volume container_id tty_args=()
+  stamp="$(date -u +'%Y%m%dT%H%M%SZ')"
+  name="codex-sbx-${PROJECT_SLUG}-claude-${stamp}-$$"
+  volume="$(claude_auth_volume_name)"
+  [[ "$interactive" == 'true' ]] && tty_args=(-it)
+
+  container_id="$(docker create "${tty_args[@]}" \
+    --name "$name" \
+    "${container_common_args[@]}" \
+    --network bridge \
+    --workdir /workspace \
+    --env CLAUDE_CONFIG_DIR=/home/node/.claude \
+    --env AGENT_MODE=networked-public \
+    --mount "type=bind,source=${REPO_DIR},target=/workspace" \
+    --mount "type=bind,source=${REPO_DIR}/.git,target=/workspace/.git,readonly" \
+    --mount "type=bind,source=${DATA_DIR},target=/data" \
+    --mount "type=bind,source=${CONTEXT_DIR},target=/context,readonly" \
+    --mount "type=volume,source=${volume},target=/auth,readonly" \
+    --tmpfs /home/node/.claude:rw,nosuid,nodev,size=536870912,uid=1000,gid=1000,mode=0700 \
+    "${protected_mount_args[@]}" \
+    --entrypoint /usr/local/bin/start-claude-session \
+    "$PROJECT_CLAUDE_IMAGE" \
+    "$@")"
+
+  local expected=(
+    '/workspace|bind|true'
+    '/workspace/.git|bind|false'
+    '/data|bind|true'
+    '/context|bind|false'
+    '/auth|volume|false'
+    "${protected_expected[@]}"
+  )
+  if ! verify_container "$container_id" bridge '/home/node/.cache,/home/node/.claude,/tmp' "${expected[@]}"; then
+    docker rm -f "$container_id" >/dev/null 2>&1 || true
+    return 1
+  fi
+  write_host_report "$container_id" claude-networked "$stamp"
+  printf '%s' "$container_id"
+}
+
+create_claude_login_container() {
+  local interactive="$1"
+  local auth_writable="$2"
+  shift 2
+  ensure_claude_auth_volume
+  set_common_args
+  local stamp name volume container_id tty_args=() auth_mount auth_expected
+  local auth_readonly_env=0
+  stamp="$(date -u +'%Y%m%dT%H%M%SZ')"
+  name="codex-sbx-${PROJECT_SLUG}-claude-login-${stamp}-$$"
+  volume="$(claude_auth_volume_name)"
+  [[ "$interactive" == 'true' ]] && tty_args=(-it)
+  auth_mount="type=volume,source=${volume},target=/auth"
+  auth_expected='/auth|volume|true'
+  if [[ "$auth_writable" != 'true' ]]; then
+    auth_mount+=',readonly'
+    auth_expected='/auth|volume|false'
+    auth_readonly_env=1
+  fi
+
+  container_id="$(docker create "${tty_args[@]}" \
+    --name "$name" \
+    "${container_common_args[@]}" \
+    --network bridge \
+    --workdir /home/node \
+    --env CLAUDE_CONFIG_DIR=/home/node/.claude \
+    --env AGENT_MODE=networked-public \
+    --env "AUTH_VOLUME_READONLY=${auth_readonly_env}" \
+    --mount "$auth_mount" \
+    --tmpfs /home/node/.claude:rw,nosuid,nodev,size=536870912,uid=1000,gid=1000,mode=0700 \
+    --entrypoint /usr/local/bin/start-claude-auth-session \
+    "$PROJECT_CLAUDE_IMAGE" \
+    "$@")"
+
+  local expected=(
+    "$auth_expected"
+  )
+  if ! verify_container "$container_id" bridge '/home/node/.cache,/home/node/.claude,/tmp' "${expected[@]}"; then
+    docker rm -f "$container_id" >/dev/null 2>&1 || true
+    return 1
+  fi
+  write_host_report "$container_id" claude-login "$stamp"
+  printf '%s' "$container_id"
+}
+
+cmd_doctor_claude() {
+  local slug="${1:-}"
+  [[ -n "$slug" ]] || die "usage: sbx claude doctor <slug>"
+  require_command docker
+  require_command git
+  docker info >/dev/null
+  load_project "$slug"
+  ensure_project_layout
+  ensure_claude_images
+  load_protected_mounts
+  note "PASS: Docker daemon is available"
+  note "PASS: project layout is complete"
+  note "PASS: context and data are separate from the Git working tree"
+  note "PASS: normal Git metadata directory exists"
+  note "PASS: pinned images and labels match"
+  note "PASS: protected paths are valid"
+  note "RESULT: project doctor passed"
+}
+
+cmd_run_claude() {
+  local slug="${1:-}"
+  [[ -n "$slug" ]] || die "usage: sbx claude run <slug> [initial prompt]"
+  shift
+  load_project "$slug"
+  ensure_project_layout
+  ensure_claude_images
+  acquire_session_lock claude
+  prepare_claude_command
+  run_claude_command create_claude_container true \
+    claude --setting-sources "" --strict-mcp-config --disable-slash-commands \
+    --append-system-prompt-file /etc/agent-workspace.md --dangerously-skip-permissions "$@"
+}
+
+cmd_exec_claude() {
+  local slug="${1:-}"
+  [[ -n "$slug" ]] || die "usage: sbx claude exec <slug> -- <command>"
+  shift
+  [[ "${1:-}" == '--' ]] || die "usage: sbx claude exec <slug> -- <command>"
+  shift
+  [[ "$#" -gt 0 ]] || die "a command is required"
+  load_project "$slug"
+  ensure_project_layout
+  ensure_claude_images
+  acquire_session_lock claude-exec
+  prepare_claude_command
+  run_claude_command create_claude_container false "$@"
+}
+
+cmd_shell_claude() {
+  local slug="${1:-}"
+  [[ -n "$slug" ]] || die "usage: sbx claude shell <slug>"
+  load_project "$slug"
+  ensure_project_layout
+  ensure_claude_images
+  acquire_session_lock claude-shell
+  prepare_claude_command
+  run_claude_command create_claude_container true bash
+}
+
+cmd_login_claude() {
+  local slug="${1:-}"
+  [[ -n "$slug" ]] || die "usage: sbx claude login <slug>"
+  load_project "$slug"
+  ensure_project_layout
+  ensure_claude_images
+  acquire_session_lock claude-auth
+  prepare_claude_command
+  run_claude_command create_claude_login_container true true \
+    claude auth login
+}
+
+cmd_auth_status_claude() {
+  local slug="${1:-}"
+  [[ -n "$slug" ]] || die "usage: sbx claude auth-status <slug>"
+  load_project "$slug"
+  ensure_project_layout
+  ensure_claude_images
+  acquire_session_lock claude-auth
+  prepare_claude_command
+  run_claude_command create_claude_login_container false false \
+    claude auth status
+}
+
+cmd_logout_claude() {
+  local slug="${1:-}"
+  [[ -n "$slug" ]] || die "usage: sbx claude auth logout <slug>"
+  load_project "$slug"
+  ensure_project_layout
+  ensure_claude_images
+  acquire_session_lock claude-auth
+  prepare_claude_command
+  run_claude_command create_claude_login_container false true \
+    claude auth logout
+}
+
+cmd_destroy_auth_claude() {
+  local slug="${1:-}"
+  local confirmation="${2:-}"
+  [[ -n "$slug" && "$confirmation" == '--yes' ]] \
+    || die "usage: sbx claude reset-auth <slug> --yes"
+  load_project "$slug"
+  local volume
+  volume="$(claude_auth_volume_name)"
+  docker volume inspect "$volume" >/dev/null 2>&1 || die "auth volume does not exist: $volume"
+  docker volume rm "$volume"
+  note "Removed project authentication volume: $volume"
 }
 
 usage() {

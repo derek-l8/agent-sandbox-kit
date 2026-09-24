@@ -68,4 +68,5 @@ sbx_validate_registry() {
 # The allowlist is explicit. Adding a file to adapters/ does not register it.
 source "${BASH_SOURCE[0]%/*}/codex.sh"
 source "${BASH_SOURCE[0]%/*}/opencode.sh"
+source "${BASH_SOURCE[0]%/*}/claude.sh"
 sbx_validate_registry

@@ -127,10 +127,18 @@ Enforced OpenCode-specific boundaries:
 - a repository `.opencode/` extension surface is shadowed with an empty tmpfs;
 - normal task sessions run `opencode --pure`.
 
-Codex and OpenCode task and shell commands share one per-project session lock
+Codex, OpenCode, and Claude Code task and shell commands share one per-project session lock
 (`control/.session-lock`), preventing those launcher commands from running
 against the same working tree concurrently. Authentication commands do not
-mount the working tree and do not use this lock.
+mount the working tree. Claude authentication commands also acquire this lock;
+Codex and OpenCode authentication retain their existing behavior without it.
+
+Claude's reviewed boundary and authentication differences are documented in
+[CLAUDE.md](CLAUDE.md). Its managed policy disables hooks, restricts MCP and
+plugins, and excludes project settings on normal runs. The only persistent
+Claude file is `.credentials.json`; runtime account metadata and history are
+ephemeral. Real OAuth login and refresh are manual acceptance checks, not
+claims established by the synthetic smoke test.
 
 ### Enforced boundaries versus accepted repository-level risks
 

@@ -1,0 +1,14 @@
+{
+  "disableAllHooks": true,
+  "allowManagedMcpServersOnly": true,
+  "allowedMcpServers": [],
+  "strictKnownMarketplaces": [],
+  "disableSideloadFlags": true,
+  "disableCommandPluginSources": true,
+  "permissions": {
+    "additionalDirectories": [
+      "/context",
+      "/data"
+    ]
+  }
+}

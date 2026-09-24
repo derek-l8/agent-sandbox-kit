@@ -52,7 +52,8 @@ sbx codex shell my-project
 sbx codex exec my-project -- npm test
 ```
 
-For OpenCode, replace `codex` with `opencode`. Initialize an empty `repo`
+For OpenCode or Claude Code, replace `codex` with `opencode` or `claude`.
+See [Claude authentication and limits](CLAUDE.md). Initialize an empty `repo`
 directory and create a trusted baseline commit before autonomous work. Linked
 Git worktrees are not supported.
 
