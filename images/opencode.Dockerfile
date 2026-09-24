@@ -9,6 +9,18 @@ ARG BASE_IMAGE
 
 USER root
 
+COPY versions.lock /tmp/toolchain-versions.lock
+COPY container/install-toolchain.sh /tmp/install-toolchain.sh
+RUN bash /tmp/install-toolchain.sh && rm /tmp/install-toolchain.sh
+
+ENV UV_PYTHON_INSTALL_DIR=/data/python \
+    UV_PYTHON_BIN_DIR=/data/bin \
+    UV_PROJECT_ENVIRONMENT=/data/venv \
+    UV_TOOL_DIR=/data/uv-tools \
+    UV_TOOL_BIN_DIR=/data/bin \
+    UV_CACHE_DIR=/home/node/.cache/uv \
+    UV_LINK_MODE=copy
+
 COPY config/agent-workspace.md /etc/agent-workspace.md
 RUN chmod 0444 /etc/agent-workspace.md
 

@@ -12,7 +12,7 @@ make_project() {
   "$ctl" init "$slug" >/dev/null
   mkdir -p "$CODEX_SANDBOX_WORKSPACES_ROOT/$slug/repo/.git"
   sed -i \
-    -e "s/:3.0.0/:$version/g" \
+    -e "s/:3.2.0/:$version/g" \
     -e 's/PROJECT_CPUS=6/PROJECT_CPUS=3/' \
     -e 's/PROJECT_MEMORY=8g/PROJECT_MEMORY=4096m/' \
     "$CODEX_SANDBOX_WORKSPACES_ROOT/$slug/control/project.env"
@@ -21,15 +21,18 @@ make_project() {
   printf 'data\n' > "$CODEX_SANDBOX_WORKSPACES_ROOT/$slug/data/data"
 }
 
-for version in 2.0.0 2.0.1; do
+for version in 2.0.0 2.0.1 3.0.0; do
   slug="upgrade-${version//./-}"
   make_project "$slug" "$version"
   config="$CODEX_SANDBOX_WORKSPACES_ROOT/$slug/control/project.env"
+  # Existing releases had no Claude image key.
+  sed -i '/^PROJECT_CLAUDE_IMAGE=/d' "$config"
   before="$(sha256sum "$config")"
   "$ctl" upgrade --dry-run "$slug" | grep -q 'Dry run: no files changed.'
   [[ "$before" == "$(sha256sum "$config")" ]]
   "$ctl" upgrade "$slug" >/dev/null
-  grep -q ':3.0.0$' "$config"
+  grep -q ':3.2.0$' "$config"
+  grep -q '^PROJECT_CLAUDE_IMAGE=local/codex-sandbox-claude:3.2.0$' "$config"
   grep -q '^PROJECT_CPUS=3$' "$config"
   grep -q '^PROJECT_MEMORY=4096m$' "$config"
   grep -q '^PROJECT_SLUG='"$slug"'$' "$config"
@@ -40,7 +43,7 @@ for version in 2.0.0 2.0.1; do
   "$ctl" upgrade "$slug" | grep -q 'already current'
   [[ "$backup_count" -eq "$(find "$(dirname "$config")" -maxdepth 1 -name 'project.env.pre-upgrade-*.bak' | wc -l)" ]]
 done
-printf 'PASS: 2.0.0/2.0.1 upgrades preserve settings/data, back up atomically, dry-run, and are idempotent\n'
+printf 'PASS: 2.x/3.0.0 upgrades add Claude and preserve settings/data, back up atomically, dry-run, and are idempotent\n'
 
 make_project unknown-key 2.0.1
 printf 'SURPRISE=yes\n' >> "$CODEX_SANDBOX_WORKSPACES_ROOT/unknown-key/control/project.env"
@@ -52,7 +55,7 @@ make_project active-lock 2.0.1
 mkdir "$CODEX_SANDBOX_WORKSPACES_ROOT/active-lock/control/.session-lock"
 printf 'agent=codex\npid=%s\n' "$$" > "$CODEX_SANDBOX_WORKSPACES_ROOT/active-lock/control/.session-lock/owner.txt"
 if "$ctl" upgrade active-lock >"$work/out" 2>"$work/err"; then exit 1; fi
-grep -q 'while a Codex or OpenCode task session is active' "$work/err"
+grep -q 'while an agent task session is active' "$work/err"
 grep -q ':2.0.1$' "$CODEX_SANDBOX_WORKSPACES_ROOT/active-lock/control/project.env"
 printf 'PASS: upgrade refuses an active cross-agent session lock\n'
 

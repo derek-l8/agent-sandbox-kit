@@ -1,6 +1,6 @@
 # Agent Sandbox Kit
 
-Agent Sandbox Kit runs Codex and OpenCode in disposable Docker containers from
+Agent Sandbox Kit runs Codex, OpenCode, and Claude Code in disposable Docker containers from
 WSL. Each agent receives one selected Git working tree without mounts for the
 rest of the WSL home, Windows files, host credentials, or the Docker socket.
 
@@ -10,18 +10,38 @@ general sandbox for untrusted repositories.
 
 ## Quick start
 
+Run these commands in WSL with Docker Desktop running and WSL integration
+enabled. The images support Linux x86_64.
+
+Replace every `<placeholder>` before running a command; the angle brackets
+are documentation notation, not shell syntax.
+
+| Placeholder | Meaning |
+| --- | --- |
+| `<agent>` | `codex`, `opencode`, or `claude`; choose explicitly |
+| `<project>` | A project slug: lowercase letters, numbers, and hyphens, starting with a letter or number; maximum 63 characters |
+| `<repo-url>` | Clone URL of the repository you want the agent to work on |
+| `<kit-directory>` | Path to your local `agent-sandbox-kit` checkout |
+| `<command>` | A shell command and its arguments to run inside the container |
+| `<file-path>` | Path to a reference file you want to import |
+| `<file-name>` | Name of an imported file, as shown by `sbx context <project> list` |
+
 ```bash
-git clone <REPOSITORY-URL> agent-sandbox-kit
+git clone https://github.com/derek-l8/agent-sandbox-kit.git
 cd agent-sandbox-kit
 ./install.sh
 sbx build
-sbx init my-project
-git clone https://github.com/OWNER/REPOSITORY.git \
-  "$HOME/agent-workspaces/my-project/repo"
-sbx codex doctor my-project
-sbx codex login my-project
-sbx codex run my-project
+sbx init <project>
+git clone "<repo-url>" "$HOME/agent-workspaces/<project>/repo"
+sbx <agent> doctor <project>
+sbx <agent> login <project>
+sbx <agent> run <project>
 ```
+
+Use the same `<project>` throughout and select the `<agent>` you want to run.
+Each agent has a separate login for that project. Create a trusted baseline
+commit before an agent session; review, commit, and push from WSL, outside the
+container.
 
 The installer copies a self-contained runtime to
 `${XDG_DATA_HOME:-$HOME/.local/share}/agent-sandbox-kit` and links `sbx` from
@@ -34,56 +54,37 @@ replacing the installed one. If copying, validation, or replacement fails, the
 previous runtime is retained or restored. The installer does not modify or
 remove `~/codex-sandbox-kit`.
 
-OpenCode uses the same shape:
-
-```bash
-sbx opencode doctor my-project
-sbx opencode login my-project
-sbx opencode run my-project
-```
-
-Create a trusted baseline commit before an agent session. Review, commit, and
-push from WSL, outside the container.
-
-## First installation and updates
-
-First installation:
-
-```bash
-cd ~/src/agent-sandbox-kit
-./install.sh
-sbx build
-sbx init my-project
-sbx codex doctor my-project
-```
+## Updates
 
 Updating the kit and an existing project:
 
 ```bash
-cd ~/src/agent-sandbox-kit
+cd "<kit-directory>"
 git pull --ff-only
 ./install.sh
 sbx version
 sbx build
-sbx upgrade my-project
-sbx codex doctor my-project
+sbx upgrade <project>
+sbx <agent> doctor <project>
 ```
 
-Use `sbx opencode doctor my-project` for OpenCode. The installer copies the
-reviewed source into a staged, validated installed runtime. `sbx` normally runs
-that installed runtime, `build` builds its pinned images, `upgrade` atomically
+The installer copies the reviewed source into a staged, validated installed
+runtime. `sbx` normally runs that installed runtime, `build` builds its pinned
+images, `upgrade` atomically
 updates only the project's image references, and `doctor` verifies without
 repairing. Compatible authentication schema v2 volumes survive patch upgrades.
 
 ## Everyday commands
 
-| Purpose | Codex | OpenCode |
-| --- | --- | --- |
-| Start agent | `sbx codex run <project>` | `sbx opencode run <project>` |
-| Log in | `sbx codex login <project>` | `sbx opencode login <project>` |
-| Validate | `sbx codex doctor <project>` | `sbx opencode doctor <project>` |
-| Diagnostic shell | `sbx codex shell <project>` | `sbx opencode shell <project>` |
-| Run a command | `sbx codex exec <project> -- <command>` | `sbx opencode exec <project> -- <command>` |
+| Purpose | Command (`<agent>` = `codex`, `opencode`, or `claude`) |
+| --- | --- |
+| Start agent | `sbx <agent> run <project>` |
+| Log in | `sbx <agent> login <project>` |
+| Check login | `sbx <agent> auth-status <project>` |
+| Log out | `sbx <agent> logout <project>` |
+| Validate | `sbx <agent> doctor <project>` |
+| Diagnostic shell | `sbx <agent> shell <project>` |
+| Run a command | `sbx <agent> exec <project> -- <command>` |
 
 Shared setup commands are `sbx init <project>` and `sbx build`.
 
@@ -122,7 +123,7 @@ Each project lives entirely in WSL under `~/agent-workspaces/<project>`:
 In Windows Explorer, select files and use **Copy as path**. In WSL run:
 
 ```bash
-sbx context my-project
+sbx context <project>
 ```
 
 Paste the quoted paths, one per line, then enter a blank line. The command
@@ -132,14 +133,15 @@ originals are untouched; no Windows folder is mounted into the container.
 You can also import WSL paths and manage copies explicitly:
 
 ```bash
-sbx context my-project add '/path/to/Plan.pdf' '/path/to/image.png'
-sbx context my-project list
-sbx context my-project remove 'Plan.pdf'
+sbx context <project> add "<file-path>"
+sbx context <project> list
+sbx context <project> remove "<file-name>"
 ```
 
+To import multiple files, supply each path as a separate quoted argument.
 Replacement requires confirmation. Removal deletes only the named imported
 copy. Imports and removals refuse to run while a project task is active.
-Both agents receive guidance about `/context` and `/data`; document parsing
+All agents receive guidance about `/context` and `/data`; document parsing
 and viewing depend on the harness's available tools.
 
 Neither folder is in the Git working tree: `git add .` in `repo/` cannot stage
@@ -154,11 +156,20 @@ are not supported.
 ## Version 3 layout
 
 Version 3 removes the offline runner, packaging command, and implicit/suffixed
-legacy agent commands. Use `sbx <agent> <action> <project>` throughout.
+legacy agent commands. Use the explicit agent commands listed above.
 Existing old-layout projects are not automatically migrated or deleted.
 `sbx upgrade` updates image pins for the current layout; it is not a layout
 migration command. Initialize a new slug if an old layout is still present.
 Authentication schema v2 and its volume names remain unchanged.
+
+## Included tools
+
+All three Linux x86_64 images provide Python **3.14.7** as `python` and
+`python3`, pinned `uv`, pip compatibility, Node.js/npm, Git, Bash, coreutils,
+find/diff/patch, ripgrep (`rg`), `fd`, curl/CA certificates, jq, file,
+tar/gzip/zip/unzip, C/C++ build tools, pkg-config, and Poppler PDF utilities.
+Tools are installed during image construction; runtime privileges and mounts
+are unchanged. See [Python and shared tools](docs/TOOLCHAIN.md).
 
 ## Tests
 
@@ -173,6 +184,8 @@ Docker-based, model-free smoke checks:
 ```bash
 bash tests/smoke-codex.sh
 bash tests/smoke-opencode.sh
+bash tests/smoke-claude.sh
+bash tests/smoke-toolchain.sh
 ```
 
 ## License

@@ -33,7 +33,9 @@ for spec in \
   'codex shell' 'codex exec' \
   'opencode run' 'opencode login' \
   'opencode auth-status' 'opencode logout' 'opencode reset-auth' \
-  'opencode doctor' 'opencode shell' 'opencode exec'; do
+  'opencode doctor' 'opencode shell' 'opencode exec' \
+  'claude run' 'claude login' 'claude auth-status' 'claude logout' \
+  'claude doctor' 'claude reset-auth' 'claude shell' 'claude exec'; do
   read -r agent action <<< "$spec"
   assert_output "<$agent>
 <$action>
@@ -66,7 +68,7 @@ help="$($sbx --help)"
   || { echo 'FAIL: help output is incomplete' >&2; exit 1; }
 printf 'PASS: help presents the short interface\n'
 
-for bad in 'claude run probe' 'codex fly probe' 'opencode destroy probe'; do
+for bad in 'unknown-agent run probe' 'codex fly probe' 'opencode destroy probe'; do
   read -ra args <<< "$bad"
   if "$sbx" "${args[@]}" >"$work/out" 2>"$work/err"; then
     printf 'FAIL: invalid invocation succeeded: %s\n' "$bad" >&2

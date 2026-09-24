@@ -32,7 +32,7 @@ slug="boundary-probe"
 ws="$work/workspaces"
 proj="$ws/$slug"
 mkdir -p "$proj"/{repo/.git,context,data,control/logs}
-printf 'PROJECT_SLUG=%s\nPROJECT_CPUS=3\nPROJECT_MEMORY=5g\nPROJECT_NETWORK_IMAGE=local/codex-sandbox-networked:3.0.0\n' "$slug" \
+printf 'PROJECT_SLUG=%s\nPROJECT_CPUS=3\nPROJECT_MEMORY=5g\nPROJECT_NETWORK_IMAGE=local/codex-sandbox-networked:3.2.0\n' "$slug" \
   > "$proj/control/project.env"
 touch "$proj/repo/AGENTS.md"
 
@@ -59,6 +59,9 @@ docker() {
     image)
       if [[ "${3:-}" == "--format" ]]; then
         case "$4" in
+          *claude.version*) echo "$CLAUDE_VERSION" ;;
+          *claude.package-integrity*) echo "$CLAUDE_PACKAGE_INTEGRITY" ;;
+          *claude.linux-x64-integrity*) echo "$CLAUDE_LINUX_X64_INTEGRITY" ;;
           *kit.version*) echo "$KIT_VERSION" ;;
           *opencode.version*) echo "$OPENCODE_VERSION" ;;
           *opencode.package-integrity*) echo "$OPENCODE_PACKAGE_INTEGRITY" ;;
@@ -83,9 +86,9 @@ docker() {
         '{{json .HostConfig.SecurityOpt}}') echo '["no-new-privileges:true"]' ;;
         '{{json .HostConfig.Devices}}'|'{{json .HostConfig.PortBindings}}') echo "null" ;;
         *Mounts*)
-          if [[ "${MOUNTS_MODE:-task}" == "login" || "${MOUNTS_MODE:-task}" == "codex-login" ]]; then
+          if [[ "${MOUNTS_MODE:-task}" == "login" || "${MOUNTS_MODE:-task}" == "codex-login" || "${MOUNTS_MODE:-task}" == "claude-login" ]]; then
             printf '/auth|volume|true\n'
-          elif [[ "${MOUNTS_MODE:-task}" == "codex-status" ]]; then
+          elif [[ "${MOUNTS_MODE:-task}" == "codex-status" || "${MOUNTS_MODE:-task}" == "claude-status" ]]; then
             printf '/auth|volume|false\n'
           else
             printf '%s\n' \
@@ -99,7 +102,9 @@ docker() {
             fi
           fi ;;
         *Tmpfs*)
-          if [[ "${MOUNTS_MODE:-task}" == codex-* ]]; then
+          if [[ "${MOUNTS_MODE:-task}" == claude-* ]]; then
+            printf '%s\n' /home/node/.cache /home/node/.claude /tmp
+          elif [[ "${MOUNTS_MODE:-task}" == codex-* ]]; then
             printf '%s\n' /home/node/.cache /home/node/.codex /tmp
           else
             printf '%s\n' /home/node/.cache /home/node/.config \
@@ -150,7 +155,7 @@ record_command() {
 
 record_codex_command() {
   local label="$1" mode="$2" entrypoint_kind="$3"
-  local image='local/codex-sandbox-networked:3.0.0'
+  local image='local/codex-sandbox-networked:3.2.0'
   shift 3
   rm -f "$work/calls.txt"
   local rc=0
@@ -211,7 +216,7 @@ assert_rejected_entrypoint_mutation() {
   local label="$1" kind="$2" invocation="$3"
   printf '%s\n' "$invocation" > "$work/mutated-create-args.txt"
   if assert_entrypoint_structure "$label" "$kind" \
-      'local/codex-sandbox-networked:3.0.0' "$work/mutated-create-args.txt"; then
+      'local/codex-sandbox-networked:3.2.0' "$work/mutated-create-args.txt"; then
     fail "$label mutation was not rejected"
   fi
   printf 'PASS: %s mutation is rejected\n' "$label"
@@ -230,7 +235,7 @@ assert_create() {
   printf 'PASS: %s\n' "$label"
 }
 
-opencode_image="local/codex-sandbox-opencode:3.0.0"
+opencode_image="local/codex-sandbox-opencode:3.2.0"
 
 # --- Task session: run-opencode -------------------------------------------
 record_command "run-opencode" task cmd_run_opencode "$slug"
@@ -312,7 +317,7 @@ assert_create "--entrypoint /usr/local/bin/start-opencode-auth-session $opencode
 record_codex_command "run" codex-task task cmd_run "$slug"
 assert_create "BUN_TMPDIR" "Codex task does not receive OpenCode Bun tmpdir" absent
 assert_create "/run/opencode-bun-tmp" "Codex task does not receive executable OpenCode tmpfs" absent
-assert_create "--entrypoint /usr/local/bin/start-codex-session local/codex-sandbox-networked:3.0.0 codex --strict-config --disable apps --disable remote_plugin --dangerously-bypass-approvals-and-sandbox" \
+assert_create "--entrypoint /usr/local/bin/start-codex-session local/codex-sandbox-networked:3.2.0 codex --strict-config --disable apps --disable remote_plugin --dangerously-bypass-approvals-and-sandbox" \
   "Codex run explicitly bypasses the inner Linux sandbox inside Docker"
 assert_create "type=volume,source=codex-sbx-${slug}-auth-v2,target=/auth,readonly" \
   "Codex run mounts authentication read-only"
@@ -324,11 +329,11 @@ assert_create "target=/agent/inbox" "Codex run excludes the private inbox" absen
 
 record_codex_command "shell" codex-task task cmd_shell "$slug"
 assert_create "target=/auth,readonly" "Codex shell keeps authentication read-only"
-assert_create "--entrypoint /usr/local/bin/start-codex-session local/codex-sandbox-networked:3.0.0 bash" "Codex shell forwards bash"
+assert_create "--entrypoint /usr/local/bin/start-codex-session local/codex-sandbox-networked:3.2.0 bash" "Codex shell forwards bash"
 
 record_codex_command "exec" codex-task task cmd_exec "$slug" -- git status
 assert_create "target=/auth,readonly" "Codex exec keeps authentication read-only"
-assert_create "--entrypoint /usr/local/bin/start-codex-session local/codex-sandbox-networked:3.0.0 git status" "Codex exec forwards the command"
+assert_create "--entrypoint /usr/local/bin/start-codex-session local/codex-sandbox-networked:3.2.0 git status" "Codex exec forwards the command"
 
 # --- Codex authentication family: auth writable, workspace absent -----------
 record_codex_command "login" codex-login auth cmd_login "$slug"
@@ -338,14 +343,14 @@ assert_create "type=volume,source=codex-sbx-${slug}-auth-v2,target=/auth " \
   "Codex login mounts authentication read-write"
 assert_create "target=/auth,readonly" "Codex login never mounts authentication read-only" absent
 assert_create "target=/workspace" "Codex login never mounts the workspace" absent
-assert_create "--entrypoint /usr/local/bin/start-codex-auth-session local/codex-sandbox-networked:3.0.0 codex login --device-auth" \
+assert_create "--entrypoint /usr/local/bin/start-codex-auth-session local/codex-sandbox-networked:3.2.0 codex login --device-auth" \
   "Codex login uses the authentication entrypoint"
 
 record_codex_command "auth-status" codex-status auth cmd_auth_status "$slug"
 assert_create "target=/auth,readonly" \
   "Codex auth-status mounts authentication read-only"
 assert_create "target=/workspace" "Codex auth-status never mounts the workspace" absent
-assert_create "--entrypoint /usr/local/bin/start-codex-auth-session local/codex-sandbox-networked:3.0.0 codex login status" \
+assert_create "--entrypoint /usr/local/bin/start-codex-auth-session local/codex-sandbox-networked:3.2.0 codex login status" \
   "Codex auth-status uses the authentication entrypoint"
 
 record_codex_command "logout" codex-login auth cmd_logout "$slug"
@@ -353,11 +358,11 @@ assert_create "type=volume,source=codex-sbx-${slug}-auth-v2,target=/auth " \
   "Codex logout mounts authentication read-write"
 assert_create "target=/auth,readonly" \
   "Codex logout never mounts authentication read-only" absent
-assert_create "--entrypoint /usr/local/bin/start-codex-auth-session local/codex-sandbox-networked:3.0.0 codex logout" \
+assert_create "--entrypoint /usr/local/bin/start-codex-auth-session local/codex-sandbox-networked:3.2.0 codex logout" \
   "Codex logout uses the authentication entrypoint"
 
 # --- Static negative mutations of Codex entrypoint structure ----------------
-codex_image='local/codex-sandbox-networked:3.0.0'
+codex_image='local/codex-sandbox-networked:3.2.0'
 assert_rejected_entrypoint_mutation "missing Codex --entrypoint" task \
   "create --name probe $codex_image codex"
 assert_rejected_entrypoint_mutation "post-image Codex --entrypoint" task \
@@ -380,9 +385,10 @@ assert_create "--entrypoint /usr/local/bin/start-opencode-session $opencode_imag
 
 # --- Concurrency locking ----------------------------------------------------
 for mutation in CONTEXT_WRITABLE EXTRA_MOUNT; do
-  for command in cmd_exec cmd_exec_opencode; do
+  for command in cmd_exec cmd_exec_opencode cmd_exec_claude; do
     mode=task
     [[ "$command" == cmd_exec ]] && mode=codex-task
+    [[ "$command" == cmd_exec_claude ]] && mode=claude-task
     if env "$mutation=true" CALLLOG="$work/calls.txt" WS="$ws" \
       LIB="$work/sandboxctl-lib.sh" ROOT="$root" MOUNTS_MODE="$mode" \
       bash "$work/harness.sh" "$command" "$slug" -- true >"$work/out" 2>"$work/err"; then
@@ -392,7 +398,7 @@ for mutation in CONTEXT_WRITABLE EXTRA_MOUNT; do
       || fail "$command did not identify mount mutation: $mutation"
   done
 done
-echo 'PASS: both agents reject writable context and unexpected mounts before startup'
+echo 'PASS: all agents reject writable context and unexpected mounts before startup'
 
 mkdir -p "$proj/control/.session-lock"
 printf 'agent=codex\npid=%d\nstarted=x\n' "$$" > "$proj/control/.session-lock/owner.txt"
@@ -411,7 +417,33 @@ CALLLOG="$work/calls.txt" WS="$ws" LIB="$work/sandboxctl-lib.sh" ROOT="$root" \
 if [[ "$rc" -eq 0 ]] || ! grep -q "a session is already active" "$work/lock-stderr.txt"; then
   fail "codex run did not respect an active same-project lock"
 fi
+for command in cmd_run_claude cmd_login_claude; do
+  rc=0
+  CALLLOG="$work/calls.txt" WS="$ws" LIB="$work/sandboxctl-lib.sh" ROOT="$root" \
+    bash "$work/harness.sh" "$command" "$slug" >/dev/null 2> "$work/claude-lock.txt" || rc=$?
+  [[ "$rc" -ne 0 ]] && grep -q 'a session is already active' "$work/claude-lock.txt" \
+    || fail "$command did not respect the shared lock"
+done
 rm -rf "$proj/control/.session-lock"
 echo "PASS: codex run refuses to start while the same-project lock is held"
 
 printf 'RESULT: launcher boundary checks passed\n'
+
+# Claude uses the same verifier and common boundary, with separate credentials.
+record_command claude-run claude-task cmd_run_claude "$slug"
+assert_create 'local/codex-sandbox-claude:3.2.0' 'Claude selects pinned image'
+assert_create 'claude-auth-v2,target=/auth,readonly' 'Claude task credentials are read-only and separate'
+assert_create 'target=/context,readonly' 'Claude context is read-only'
+assert_create 'target=/data' 'Claude data is mounted'
+assert_create 'start-claude-session' 'Claude uses task boundary check'
+assert_create 'strict-mcp-config' 'Claude disables implicit MCP configuration'
+assert_create 'dangerously-skip-permissions' 'Docker is the Claude execution boundary'
+for action in login logout; do
+  record_command "claude-$action" claude-login "cmd_${action}_claude" "$slug"
+  assert_create 'target=/workspace' 'Claude authentication has no workspace' absent
+  assert_create 'target=/context|target=/data' 'Claude authentication has no context/data' absent
+  assert_create 'claude-auth-v2,target=/auth ' 'Claude auth container can save credentials'
+done
+record_command claude-status claude-status cmd_auth_status_claude "$slug"
+assert_create 'claude-auth-v2,target=/auth,readonly' 'Claude status cannot change stored credentials'
+printf 'PASS: Claude launcher task and authentication boundaries\n'

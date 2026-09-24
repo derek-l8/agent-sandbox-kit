@@ -5,7 +5,7 @@ set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source "$root/adapters/registry.sh"
 
-[[ "${SBX_AGENTS[*]}" == 'codex opencode' ]] \
+[[ "${SBX_AGENTS[*]}" == 'codex opencode claude' ]] \
   || { echo 'FAIL: registry allowlist changed unexpectedly' >&2; exit 1; }
 
 for agent in "${SBX_AGENTS[@]}"; do

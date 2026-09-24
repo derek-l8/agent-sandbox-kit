@@ -22,9 +22,11 @@ run_suite() {
 }
 
 run_suite prune-script.sh
+run_suite claude-prune.sh
 run_suite opencode-command-reachability.sh
 run_suite opencode-control-flow.sh
 run_suite codex-auth-control-flow.sh
+run_suite claude-auth-control-flow.sh
 run_suite launcher-boundaries.sh
 run_suite adapter-conformance.sh
 run_suite sbx-cli.sh
@@ -34,6 +36,45 @@ run_suite upgrade.sh
 run_suite auth-compatibility.sh
 run_suite diagnostics.sh
 run_suite smoke-safety.sh
+
+# Codex filters shell environments; its explicit values must match the images.
+python3 - <<'PY' "$root"
+import pathlib, re, sys, tomllib
+root = pathlib.Path(sys.argv[1])
+config = tomllib.loads((root / 'config/codex-config.toml').read_text())
+values = config['shell_environment_policy']['set']
+for image in ('codex-networked', 'opencode', 'claude'):
+    text = (root / f'images/{image}.Dockerfile').read_text()
+    for key, value in re.findall(r'\b(UV_[A-Z_]+)=([^\s\\]+)', text):
+        assert values[key] == value, (image, key)
+assert values['UV_PROJECT_ENVIRONMENT'] == '/data/venv'
+assert values['UV_PYTHON_INSTALL_DIR'] == '/data/python'
+print('PASS: Codex shell tool environment preserves shared uv storage defaults')
+PY
+
+python3 - <<'PY' "$root"
+import json, pathlib, sys
+root = pathlib.Path(sys.argv[1])
+config = json.loads((root / 'config/claude-managed.json').read_text())
+for key in ('disableAllHooks', 'allowManagedMcpServersOnly',
+            'disableSideloadFlags', 'disableCommandPluginSources'):
+    assert config[key] is True, key
+assert config['allowedMcpServers'] == []
+assert config['strictKnownMarketplaces'] == []
+assert config['permissions']['additionalDirectories'] == ['/context', '/data']
+lock = dict(line.split('=', 1) for line in (root / 'versions.lock').read_text().splitlines()
+            if line and not line.startswith('#'))
+assert lock['CLAUDE_VERSION'] == '2.1.280'
+for key in ('CLAUDE_PACKAGE_INTEGRITY', 'CLAUDE_LINUX_X64_INTEGRITY'):
+    assert lock[key].startswith('sha512-')
+dockerfile = (root / 'images/claude.Dockerfile').read_text()
+for package in ('@anthropic-ai/claude-code@', '@anthropic-ai/claude-code-linux-x64@'):
+    assert f'npm view "{package}${{CLAUDE_VERSION}}" dist.integrity' in dockerfile
+assert 'DISABLE_UPDATES=1' in dockerfile
+assert 'USER node' in dockerfile
+assert '[[ -w /auth ]] || return 0' in (root / 'container/run-with-claude-auth.sh').read_text()
+print('PASS: Claude managed policy, package pins, updater and auth-write guard')
+PY
 
 python3 - <<'PY' "$root/config/codex-config.toml" "$root/config/codex-requirements.toml"
 import sys
@@ -255,7 +296,7 @@ echo "PASS: no instruction-guard, polling, or kernel-enforcement mechanisms are 
   || fail "unsupported flag found"
 
 # Naming taxonomy: agent implementations are explicit, shared boundary pieces
-# remain neutral, and the pre-3.0.0 generic Codex names may not return.
+# remain neutral, and the pre-3.2.0 generic Codex names may not return.
 [[ ! -e "$root/tests/smoke.sh" ]] \
   || fail "tests/smoke.sh returned; the Codex smoke test is smoke-codex.sh"
 for required in \
