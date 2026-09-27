@@ -22,7 +22,7 @@ git -C "$source_checkout" config user.name test
 git -C "$source_checkout" config user.email test@example.invalid
 git -C "$source_checkout" add .
 git -C "$source_checkout" commit -qm baseline
-git init -q --bare "$remote"
+git init -q --bare -b main "$remote"
 git -C "$source_checkout" remote add origin "$remote"
 git -C "$source_checkout" push -qu origin main
 
