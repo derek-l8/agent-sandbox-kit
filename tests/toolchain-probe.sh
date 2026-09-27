@@ -56,8 +56,8 @@ pdftotext /data/toolchain/probe.pdf - | grep -q pdf-ok
 pdftoppm -singlefile -scale-to 200 -png /data/toolchain/probe.pdf /data/toolchain/page
 test -s /data/toolchain/page.png
 # An older project can explicitly select the image's distro Python.
-uv venv --offline --python /usr/bin/python3 /data/legacy-venv
-/data/legacy-venv/bin/python -c 'import sys; assert sys.version_info[:2] != (3,14)'
+uv venv --offline --python /usr/bin/python3 /data/distro-venv
+/data/distro-venv/bin/python -c 'import sys; assert sys.version_info[:2] != (3,14)'
 mkdir /data/toolchain/project
 printf '[project]\nname="smoke-project"\nversion="0.0.0"\nrequires-python=">=3.14"\ndependencies=[]\n' > /data/toolchain/project/pyproject.toml
 (cd /data/toolchain/project; UV_PROJECT_ENVIRONMENT=/data/project-venv uv sync --offline)

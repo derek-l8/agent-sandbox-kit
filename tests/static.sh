@@ -32,8 +32,9 @@ run_suite adapter-conformance.sh
 run_suite sbx-cli.sh
 run_suite context.sh
 run_suite install.sh
+run_suite update.sh
 run_suite upgrade.sh
-run_suite auth-compatibility.sh
+run_suite auth-labels.sh
 run_suite diagnostics.sh
 run_suite smoke-safety.sh
 
@@ -287,7 +288,7 @@ for forbidden in instruction-guard guarded-run 'LD_PRELOAD' ptrace 'seccomp'; do
 done
 ! find "$root" -path "$root/.git" -prune -o -type f -name 'instruction-guard*' -print | grep -q . \
   || fail "instruction-guard file exists"
-echo "PASS: no instruction-guard, polling, or kernel-enforcement mechanisms are present"
+echo "PASS: no instruction-guard or kernel-enforcement mechanisms are present"
 
 ! grep -RIn 'REPLACE_PROJECT_SLUG\|include_apps_instructions\|/mnt/c/Users/example/Documents/Example-Workspace/2026-' "$root" \
   --exclude-dir=.git --exclude=static.sh \

@@ -20,7 +20,7 @@ STUB
 chmod +x "$work/bin/wslpath"
 export CONTEXT_TEST_ROOT="$work"
 export PATH="$work/bin:$PATH"
-printf '"C:\Users\Derek\Plan with spaces.pdf"\r\n"%s/source/image.png"\r\n\r\n' "$work" \
+printf '%s\r\n"%s/source/image.png"\r\n\r\n' '"C:\Users\Derek\Plan with spaces.pdf"' "$work" \
   | "$sbx" context probe > "$work/result"
 grep -qx 'Imported: /context/Plan with spaces.pdf' "$work/result"
 cmp "$work/source/Plan with spaces.pdf" "$project/context/Plan with spaces.pdf"

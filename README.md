@@ -51,33 +51,42 @@ is not on `PATH`, the installer prints the exact shell setup line to add.
 
 Running `./install.sh` again stages and validates a complete new runtime before
 replacing the installed one. If copying, validation, or replacement fails, the
-previous runtime is retained or restored. The installer does not modify or
-remove `~/codex-sandbox-kit`.
+previous runtime is retained or restored.
 
 ## Updates
 
-Updating the kit and an existing project:
+Before an agent `run`, `sbx` makes at most one bounded remote check every 24
+hours and prints a notice when the tracked kit checkout has an update. It does
+not pull, install, rebuild, or change a project automatically. Disable this
+check with `SBX_DISABLE_UPDATE_CHECK=1`.
+
+Check or install a tracked fast-forward update from the host:
 
 ```bash
-cd "<kit-directory>"
-git pull --ff-only
-./install.sh
-sbx version
-sbx build
-sbx upgrade <project>
+sbx update --check
+sbx update <project>
 sbx <agent> doctor <project>
 ```
 
-The installer copies the reviewed source into a staged, validated installed
-runtime. `sbx` normally runs that installed runtime, `build` builds its pinned
-images, `upgrade` atomically
-updates only the project's image references, and `doctor` verifies without
-repairing. Compatible authentication schema v2 volumes survive patch upgrades.
+`sbx update` requires the recorded source checkout to be clean, on a branch
+with an upstream, and fast-forwardable. It shows the source, exact commits,
+change summary, and a command for reviewing the full diff. Confirming runs the
+fetched checkout's tests and installer with your WSL user permissions. The
+command then fast-forwards the source, runs the Docker-free suite, installs the
+validated runtime, rebuilds images only when their inputs changed, and
+optionally upgrades the named project's image references. Use the printed diff
+command before `--yes` in a non-interactive workflow.
+
+The installer records the source checkout but copies a self-contained
+runtime. If that checkout is moved or deleted, the existing runtime still
+works; clone the kit again and run `./install.sh` to reconnect updates.
 
 ## Everyday commands
 
 | Purpose | Command (`<agent>` = `codex`, `opencode`, or `claude`) |
 | --- | --- |
+| Check for kit update | `sbx update --check` |
+| Install kit update | `sbx update <project>` |
 | Start agent | `sbx <agent> run <project>` |
 | Log in | `sbx <agent> login <project>` |
 | Check login | `sbx <agent> auth-status <project>` |
@@ -86,7 +95,7 @@ repairing. Compatible authentication schema v2 volumes survive patch upgrades.
 | Diagnostic shell | `sbx <agent> shell <project>` |
 | Run a command | `sbx <agent> exec <project> -- <command>` |
 
-Shared setup commands are `sbx init <project>` and `sbx build`.
+Shared setup commands are `sbx init <project>`, `sbx update`, and `sbx build`.
 
 The CLI uses an explicit allowlisted adapter registry. Agent-specific image,
 executable, version, authentication, configuration-validation, and command
@@ -152,15 +161,6 @@ network. Back up important `/data` state separately from Git.
 The workspace root defaults to `$HOME/agent-workspaces`; set
 `CODEX_SANDBOX_WORKSPACES_ROOT` to another WSL location. Linked Git worktrees
 are not supported.
-
-## Version 3 layout
-
-Version 3 removes the offline runner, packaging command, and implicit/suffixed
-legacy agent commands. Use the explicit agent commands listed above.
-Existing old-layout projects are not automatically migrated or deleted.
-`sbx upgrade` updates image pins for the current layout; it is not a layout
-migration command. Initialize a new slug if an old layout is still present.
-Authentication schema v2 and its volume names remain unchanged.
 
 ## Included tools
 

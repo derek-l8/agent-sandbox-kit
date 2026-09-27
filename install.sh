@@ -50,6 +50,8 @@ for item in "${runtime_items[@]}"; do
   }
   cp -a -- "${kit_root}/${item}" "$stage/"
 done
+printf '%s\n' "$kit_root" > "$stage/source-path"
+chmod 0600 "$stage/source-path"
 
 for required in \
   container/install-toolchain.sh \
@@ -61,7 +63,7 @@ for required in \
   container/check-codex-login.sh container/check-opencode-networked.sh container/check-opencode-login.sh \
   container/prune-auth-volume.sh container/run-with-codex-auth.sh \
   container/run-with-opencode-auth.sh container/start-codex-auth-session.sh \
-  container/start-codex-session.sh \
+  container/start-codex-session.sh source-path \
   container/start-opencode-auth-session.sh container/start-opencode-session.sh versions.lock; do
   [[ -f "${stage}/${required}" ]] || {
     printf 'ERROR: staged runtime is incomplete: %s\n' "$required" >&2

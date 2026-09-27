@@ -30,6 +30,6 @@ for agent in codex opencode claude; do
     test ! -e /home/node/.cache/uv/CACHED_SENTINEL
     '
   # Remove only this disposable test's generated environments before next agent.
-  "$ctl" "$agent" exec "$slug" -- bash -c 'set -e; test -d /data/toolchain; rm -rf /data/toolchain /data/venv /data/legacy-venv /data/project-venv'
+  "$ctl" "$agent" exec "$slug" -- bash -c 'set -e; test -d /data/toolchain; rm -rf /data/toolchain /data/venv /data/distro-venv /data/project-venv'
 done
 echo 'RESULT: shared toolchain smoke passed for all agents'

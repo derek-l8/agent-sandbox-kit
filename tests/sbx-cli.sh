@@ -11,6 +11,9 @@ cp "$root/adapters/"*.sh "$work/kit/adapters/"
 
 cat > "$work/kit/bin/sandboxctl" <<'STUB'
 #!/usr/bin/env bash
+if [[ "${1:-}" == update && "${2:-}" == --auto-check ]]; then
+  exit 0
+fi
 printf '<%s>\n' "$@"
 STUB
 chmod +x "$work/kit/bin/sbx" "$work/kit/bin/sandboxctl"
@@ -61,6 +64,8 @@ printf 'PASS: arguments after -- retain their exact boundaries\n'
 assert_output '<init>
 <probe>' init probe
 assert_output '<build>' build
+assert_output '<update>
+<--check>' update --check
 printf 'PASS: shared commands translate directly\n'
 
 help="$($sbx --help)"
