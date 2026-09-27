@@ -11,26 +11,27 @@ mkdir -p "$source_copy"
 cp -a "$root/install.sh" "$root/bin" "$root/adapters" "$root/config" \
   "$root/container" "$root/images" "$root/versions.lock" "$source_copy/"
 
-# Replace only the fixture's compatibility launcher so routing can be checked
+# Replace only the fixture's launcher so routing can be checked
 # without Docker, authentication, networking, or a model.
 apply_stub="$source_copy/bin/sandboxctl"
-printf '%s\n' '#!/usr/bin/env bash' 'printf "<%s>\\n" "$@"' > "$apply_stub"
+printf '%s\n' '#!/usr/bin/env bash' \
+  'if [[ "${1:-}" == update && "${2:-}" == --auto-check ]]; then exit 0; fi' \
+  'printf "<%s>\\n" "$@"' > "$apply_stub"
 chmod +x "$apply_stub"
 
 home="$work/home"
 xdg_bin="$work/xdg/bin"
 xdg_data="$work/xdg/data"
-mkdir -p "$home/codex-sandbox-kit"
-printf 'fallback-must-remain\n' > "$home/codex-sandbox-kit/sentinel"
 output="$(HOME="$home" XDG_BIN_HOME="$xdg_bin" XDG_DATA_HOME="$xdg_data" PATH=/usr/bin:/bin bash "$source_copy/install.sh")"
 sbx="$xdg_bin/sbx"
 runtime="$xdg_data/agent-sandbox-kit"
 [[ -L "$sbx" ]]
 [[ "$(readlink "$sbx")" == "$runtime/bin/sbx" ]]
-for item in bin adapters config container images versions.lock; do
+for item in bin adapters config container images versions.lock source-path; do
   [[ -e "$runtime/$item" ]] || { echo "FAIL: installed runtime omitted $item" >&2; exit 1; }
 done
-grep -qx 'fallback-must-remain' "$home/codex-sandbox-kit/sentinel"
+[[ "$(cat "$runtime/source-path")" == "$source_copy" ]]
+[[ "$(stat -c %a "$runtime/source-path")" == 600 ]]
 [[ "$output" == *"export PATH=\"$xdg_bin:\$PATH\""* ]] \
   || { echo 'FAIL: installer omitted PATH setup instructions' >&2; exit 1; }
 printf 'PASS: installer creates a complete XDG runtime and explains missing PATH\n'
@@ -60,5 +61,4 @@ fi
 after="$(sha256sum "$runtime/bin/sbx" "$runtime/versions.lock")"
 [[ "$before" == "$after" ]]
 "$sbx" --help >/dev/null
-grep -qx 'fallback-must-remain' "$home/codex-sandbox-kit/sentinel"
-printf 'PASS: failed upgrade preserves the installed runtime and fallback tree\n'
+printf 'PASS: failed upgrade preserves the installed runtime\n'

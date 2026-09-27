@@ -1,7 +1,7 @@
 # Python and shared tools
 
-Kit 3.2.0 makes Python 3.14.7 the default in each agent image. `python` and
-`python3` resolve to the root-owned interpreter under `/opt/python`. The distro
+Each agent image uses Python 3.14.7 by default. `python` and `python3` resolve
+to the root-owned interpreter under `/opt/python`. The distro
 interpreter, when present, stays in `/usr/bin`; operating-system tools are not
 redirected to Python 3.14. `uv` 0.12.18 is installed from a SHA-256-verified
 official PyPI wheel. The exact pins are in `versions.lock`.

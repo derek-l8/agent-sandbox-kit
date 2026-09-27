@@ -7,7 +7,7 @@ existing CPU, memory, and process limits. Network access is enabled.
 
 ## Install or update
 
-Run these commands in WSL from the reviewed kit checkout:
+Run these commands in WSL from the kit checkout:
 
 ```bash
 ./install.sh
@@ -78,7 +78,8 @@ boundary, not Claude permission prompts. This does not prevent network
 exfiltration or protect files writable inside `/workspace` and `/data`. The
 agent can read its own credential. Use repositories and context you trust to
 the selected account. No host authentication, MCP servers, or plugins are
-imported. Automatic updates are disabled; update the reviewed pins instead.
+imported. In-container automatic updates are disabled; use host `sbx update`
+to install tracked kit updates.
 
 ## Validation
 

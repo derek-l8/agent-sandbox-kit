@@ -28,7 +28,7 @@ sed '$d' "$root/bin/sandboxctl" > "$work/sandboxctl-lib.sh"
 slug="reachability-probe"
 ws="$work/workspaces"
 mkdir -p "$ws/$slug"/{repo/.git,context,data,control/logs}
-printf 'PROJECT_SLUG=%s\nPROJECT_CPUS=4\nPROJECT_MEMORY=8g\n' "$slug" \
+printf 'PROJECT_SLUG=%s\nPROJECT_CPUS=4\nPROJECT_MEMORY=8g\nPROJECT_NETWORK_IMAGE=local/codex-sandbox-networked:3.3.0\nPROJECT_OPENCODE_IMAGE=local/codex-sandbox-opencode:3.3.0\nPROJECT_CLAUDE_IMAGE=local/codex-sandbox-claude:3.3.0\n' "$slug" \
   > "$ws/$slug/control/project.env"
 
 cat > "$work/harness.sh" <<'HARNESS'

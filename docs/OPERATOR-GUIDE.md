@@ -15,29 +15,38 @@ This installs the complete runtime under
 `${XDG_DATA_HOME:-$HOME/.local/share}/agent-sandbox-kit` and creates the
 user-facing launcher at `${XDG_BIN_HOME:-$HOME/.local/bin}/sbx`, without root
 access. If needed, the installer prints the `PATH` line to add. The installed
-command is independent of the checkout, and the installer never modifies or
-deletes the fallback `~/codex-sandbox-kit` tree.
+command is independent of the checkout.
 
-For an upgrade, update the reviewed checkout and use this complete sequence:
+The installer records this source checkout. Before an agent `run`, the host
+launcher makes at most one bounded remote update check every 24 hours. It only
+prints a notice; it never changes the source, installed runtime, images, or
+project. Set `SBX_DISABLE_UPDATE_CHECK=1` to disable the check.
+
+Check or install an update with:
 
 ```bash
-cd /path/to/agent-sandbox-kit
-git pull --ff-only
-./install.sh
-sbx version
-sbx build
-sbx upgrade my-project
+sbx update --check
+sbx update my-project
 sbx codex doctor my-project
 ```
 
-Substitute `sbx opencode doctor my-project` when appropriate. The new
-runtime is copied to a temporary sibling, checked for all required runtime
-files, shell syntax, and working `sbx --help`, and only then swapped into
-place. A failed copy, validation, or swap leaves the prior installation in
-place or restores it. `sbx` normally runs the installed runtime rather than the
-current directory. `build` uses that runtime's lock file, `upgrade` backs up and
-atomically migrates project image pins, and `doctor` is read-only. Authentication
-schema v2 normally survives compatible patch upgrades.
+Substitute the appropriate agent for the final `doctor`. `sbx update` requires
+a clean tracked branch and a fast-forward, then prints the remote URL, exact
+commits, diff summary, and a review command. Confirming allows the fetched
+checkout's tests and installer to run with your WSL user permissions. The
+updater validates and installs the runtime, rebuilds the images only when
+`versions.lock`, `images/`, `config/`, or `container/` changed, and upgrades the
+named project.
+
+The source checkout is updated before validation. If validation fails, the
+installed runtime and project remain unchanged while the source stays at the
+fetched commit for inspection. An image-build failure can leave the validated
+runtime installed but the project unchanged; rerun `sbx build`, then
+`sbx upgrade my-project`. `--yes` skips only the confirmation prompt.
+
+If the recorded checkout is moved or deleted, normal agent commands continue
+to use the copied runtime. Clone the kit and rerun `./install.sh` to restore the
+update path.
 
 ## Project setup and daily use
 
@@ -58,7 +67,7 @@ directory and create a trusted baseline commit before autonomous work. Linked
 Git worktrees are not supported.
 
 The launcher checks the container, writes a report under `control/logs`, and
-then starts it. Both agents share a per-project lock. Networked runners receive
+then starts it. All agents share a per-project lock. Networked runners receive
 only the selected repository, read-only `/context`, writable persistent `/data`,
 internet access, and their project login. They do not receive Windows drives, general
 WSL home, SSH material, Docker socket, browser sessions, or editor sockets.
@@ -126,7 +135,7 @@ images, and host reports under `control/logs`.
 | Authentication schema incompatible | Run the exact `sbx <agent> reset-auth <project> --yes` printed by the error, then login. Only that agent/project login is deleted; repository and other agent login remain. |
 | Docker daemon unavailable | Start Docker Desktop and its WSL integration, then retry. |
 | Smoke test stale state | Reinstall/update: current smoke tests always create unique temporary roots and cannot reuse normal projects. |
-| OpenTUI executable-temp failure | Reinstall 2.0.2, rebuild, and run `bash tests/smoke-opencode.sh`; keep general `/tmp` non-executable. |
+| OpenTUI executable-temp failure | Reinstall the current kit, rebuild, and run `bash tests/smoke-opencode.sh`; keep general `/tmp` non-executable. |
 
 ### Codex and the Bubblewrap warning
 
@@ -138,15 +147,6 @@ security boundary, including its mount allowlist, read-only root filesystem,
 dropped capabilities, `no-new-privileges`, resource limits, and project lock.
 Consequently the direct-WSL Bubblewrap warning is not expected for this path,
 and Bubblewrap should not be added to the image as a duplicate security layer.
-
-## Version 3 compatibility
-
-Only canonical `sbx <agent> <action> <project>` commands are supported. The
-underlying `bin/sandboxctl` accepts the same canonical arguments; old aliases,
-offline execution, and review packaging have been removed. Version 3 expects
-`repo/`, `context/`, `data/`, and host-only `control/`. It never deletes or
-silently migrates an old layout. Initialize a new slug when necessary.
-Image upgrades preserve authentication schema v2 volumes.
 
 ## Trusted-WSL validation
 

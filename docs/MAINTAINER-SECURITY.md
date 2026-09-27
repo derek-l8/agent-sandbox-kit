@@ -164,9 +164,9 @@ configuration.
 
 The image stores root-owned configuration at `/etc/codex/config.toml` and
 root-owned constraints at `/etc/codex/requirements.toml`. The interactive
-runtime uses `--strict-config` to fail on unknown keys. Codex 0.148 does not
-support that flag on authentication or informational subcommands, so those
-commands rely on the same root-owned configuration without the flag. Each
+runtime uses `--strict-config` to fail on unknown keys. Authentication and
+informational subcommands rely on the same root-owned configuration without
+that interactive-only flag. Each
 container receives a fresh tmpfs `CODEX_HOME`. Official Codex documentation
 specifies that file-backed credential storage uses
 `$CODEX_HOME/auth.json`; the enforced `cli_auth_credentials_store = "file"`
@@ -205,26 +205,24 @@ sandbox because the inner Codex sandbox is intentionally bypassed.
 - the kit version;
 - an immutable base-image digest;
 - an exact Codex CLI version;
-- npm integrity values for the wrapper and Linux x64 binary package;
+- npm integrity values for the Codex wrapper and Linux x64 binary package;
 - an exact OpenCode version with npm integrity values for its package and
-  Linux x64 binary, plus the local OpenCode image tag;
+  Linux x64 binary;
+- an exact Claude Code version with npm integrity values for its package and
+  Linux x64 binary;
 - the local image tags.
 
-`AUTH_SCHEMA_VERSION` is separate from `KIT_VERSION`. New Codex and OpenCode
-volumes carry managed, project, agent, and authentication-schema labels.
-Narrow legacy v2 volumes from kit 2.0.0 and 2.0.1 are accepted from their
-existing identity labels and volume naming without rewriting credential data;
-the old kit label is informational. Wrong project/agent, missing management,
-or unsupported explicit schema still fails closed with an agent-specific reset
+`AUTH_SCHEMA_VERSION` is separate from `KIT_VERSION`. The launcher verifies
+each credential volume's management, project, agent, and supported schema
+identity before use. A mismatch fails closed with an agent-specific reset
 command. Reset is never automatic.
 
-Version 3 removes offline image keys and old command aliases without an
-automatic workspace migration. Existing authentication schema v2 and
-`codex-sbx-*` volume names are retained. `NETWORK_IMAGE` and
-`PROJECT_NETWORK_IMAGE` continue to identify the Codex image.
-
-Do not use `latest`, floating base tags without digests, or automatic agent
-updates. Upgrades are deliberate maintenance events:
+Do not use `latest`, floating base tags without digests, or in-container agent
+self-updates. The host launcher may check the tracked kit remote and install an
+explicitly confirmed, fast-forward-only kit update; it never chooses or floats
+agent versions. Confirmation permits the fetched checkout's tests and installer
+to run with the WSL user's permissions, so inspect the printed source, commits,
+and diff first. Changing pins remains a deliberate maintenance event:
 
 1. Review the current official Codex/OpenCode configuration and CLI
    documentation.

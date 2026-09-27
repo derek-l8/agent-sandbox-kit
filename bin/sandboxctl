@@ -53,11 +53,11 @@ load_project() {
   [[ -f "$PROJECT_CONFIG" ]] || die "project is not registered: $requested_slug"
 
   PROJECT_SLUG=''
-  PROJECT_CPUS='6'
-  PROJECT_MEMORY='8g'
-  PROJECT_NETWORK_IMAGE="$NETWORK_IMAGE"
-  PROJECT_OPENCODE_IMAGE="$OPENCODE_IMAGE"
-  PROJECT_CLAUDE_IMAGE="$CLAUDE_IMAGE"
+  PROJECT_CPUS=''
+  PROJECT_MEMORY=''
+  PROJECT_NETWORK_IMAGE=''
+  PROJECT_OPENCODE_IMAGE=''
+  PROJECT_CLAUDE_IMAGE=''
 
   while IFS='=' read -r key value; do
     [[ -z "$key" || "$key" == \#* ]] && continue
@@ -72,6 +72,8 @@ load_project() {
   [[ "$PROJECT_SLUG" == "$requested_slug" ]] || die "project slug does not match directory"
   [[ "$PROJECT_CPUS" =~ ^[1-9][0-9]*$ ]] || die "PROJECT_CPUS must be a positive integer"
   [[ "$PROJECT_MEMORY" =~ ^[1-9][0-9]*[mg]$ ]] || die "PROJECT_MEMORY must look like 8g or 4096m"
+  [[ -n "$PROJECT_NETWORK_IMAGE" && -n "$PROJECT_OPENCODE_IMAGE" && -n "$PROJECT_CLAUDE_IMAGE" ]] \
+    || die "project config is missing required image keys: $PROJECT_CONFIG"
 
   REPO_DIR="${PROJECT_ROOT}/repo"
   DATA_DIR="${PROJECT_ROOT}/data"
@@ -274,14 +276,8 @@ auth_recovery() {
 
 validate_auth_labels() {
   local expected_agent="$1" volume="$2" managed="$3" agent="$4" project="$5" schema="$6" kit="$7"
-  local legacy=false
-  if [[ -z "$schema" && ( "$kit" == 2.0.0 || "$kit" == 2.0.1 ) ]]; then
-    if [[ "$expected_agent" == codex && -z "$agent" ]]; then legacy=true; fi
-    if [[ "$expected_agent" == opencode && "$agent" == opencode ]]; then legacy=true; fi
-  fi
   if [[ "$managed" == true && "$project" == "$PROJECT_SLUG" \
-        && ( "$agent" == "$expected_agent" || ( "$expected_agent" == codex && "$legacy" == true ) ) \
-        && ( "$schema" == "$AUTH_SCHEMA_VERSION" || "$legacy" == true ) ]]; then
+        && "$agent" == "$expected_agent" && "$schema" == "$AUTH_SCHEMA_VERSION" ]]; then
     return 0
   fi
   printf 'ERROR: incompatible authentication volume\nAgent: %s\nProject: %s\nVolume: %s\nExpected schema: %s\nActual labels: managed=%s agent=%s project=%s schema=%s kit-version=%s\n' \
@@ -770,6 +766,210 @@ cmd_version() {
         "$KIT_VERSION" "$installed_version"
     fi
   fi
+}
+
+update_source_checkout() {
+  local source=''
+  if [[ -d "$KIT_ROOT/.git" ]]; then
+    source="$KIT_ROOT"
+  elif [[ -f "$KIT_ROOT/source-path" ]]; then
+    IFS= read -r source < "$KIT_ROOT/source-path"
+  fi
+  [[ "$source" == /* && -d "$source/.git" && ! -L "$source" ]] || return 1
+  [[ -f "$source/install.sh" && -f "$source/versions.lock" ]] || return 1
+  realpath -e -- "$source"
+}
+
+display_remote_url() {
+  local url="${1%%\?*}"
+  url="${url%%#*}"
+  case "$url" in
+    *://*@*) printf '%s://[credentials-redacted]@%s' "${url%%://*}" "${url#*@}" ;;
+    *) printf '%s' "$url" ;;
+  esac
+}
+
+load_update_tracking() {
+  local source="$1"
+  UPDATE_BRANCH="$(
+    git -C "$source" symbolic-ref --quiet --short HEAD 2>/dev/null
+  )" || return 1
+  UPDATE_UPSTREAM="$(
+    git -C "$source" rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null
+  )" || return 1
+  [[ "$UPDATE_UPSTREAM" == */* ]] || return 1
+  UPDATE_REMOTE="${UPDATE_UPSTREAM%%/*}"
+  UPDATE_REMOTE_BRANCH="${UPDATE_UPSTREAM#*/}"
+  UPDATE_REMOTE_URL="$(
+    git -C "$source" remote get-url "$UPDATE_REMOTE" 2>/dev/null
+  )" || return 1
+  UPDATE_REMOTE_URL="$(display_remote_url "$UPDATE_REMOTE_URL")"
+}
+
+remote_update_sha() {
+  local source="$1" output sha
+  output="$(
+    GIT_TERMINAL_PROMPT=0 timeout 10s git -C "$source" \
+      ls-remote "$UPDATE_REMOTE" "refs/heads/$UPDATE_REMOTE_BRANCH" 2>/dev/null
+  )" || return 1
+  sha="${output%%$'\t'*}"
+  [[ "$sha" =~ ^[0-9a-f]{40,64}$ ]] || return 1
+  printf '%s' "$sha"
+}
+
+source_kit_version() {
+  sed -n 's/^KIT_VERSION=//p' "$1/versions.lock" | head -n1
+}
+
+update_cache_file() {
+  printf '%s/agent-sandbox-kit/update-check' "${XDG_CACHE_HOME:-${HOME}/.cache}"
+}
+
+automatic_update_check_due() {
+  [[ "${SBX_DISABLE_UPDATE_CHECK:-0}" != 1 ]] || return 1
+  local cache now modified=0
+  cache="$(update_cache_file)"
+  now="$(date +%s)"
+  [[ -f "$cache" ]] && modified="$(stat -c %Y "$cache" 2>/dev/null || printf 0)"
+  (( now - modified >= 86400 ))
+}
+
+record_update_check() {
+  local cache temporary
+  cache="$(update_cache_file)"
+  mkdir -p -- "$(dirname "$cache")" || return 0
+  temporary="${cache}.$$"
+  printf 'checked=%s\n' "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" > "$temporary" || return 0
+  chmod 0600 "$temporary" || true
+  mv -f -- "$temporary" "$cache" || true
+}
+
+automatic_update_check() {
+  automatic_update_check_due || return 0
+  local source local_sha tracked_sha remote_sha
+  source="$(update_source_checkout)" || return 0
+  load_update_tracking "$source" || return 0
+  local_sha="$(git -C "$source" rev-parse HEAD 2>/dev/null)" || return 0
+  tracked_sha="$(git -C "$source" rev-parse "$UPDATE_UPSTREAM" 2>/dev/null)" || return 0
+  remote_sha="$(remote_update_sha "$source")" || {
+    record_update_check
+    return 0
+  }
+  record_update_check
+  [[ "$local_sha" == "$tracked_sha" && "$remote_sha" != "$local_sha" ]] || return 0
+  printf 'UPDATE AVAILABLE: the tracked Agent Sandbox Kit source has remote changes.\nRun: sbx update --check\nThen: sbx update [<project>]\n' >&2
+}
+
+cmd_update() {
+  local check=false assume_yes=false auto=false project='' source local_sha remote_sha
+  local image_inputs_changed=false
+  while [[ "$#" -gt 0 ]]; do
+    case "$1" in
+      --check) check=true ;;
+      --yes) assume_yes=true ;;
+      --auto-check) auto=true ;;
+      --*) die "unknown update option: $1" ;;
+      *)
+        [[ -z "$project" ]] \
+          || die 'usage: sbx update --check | sbx update [--yes] [<project>]'
+        project="$1"
+        ;;
+    esac
+    shift
+  done
+
+  if [[ "$check" == true && ( "$assume_yes" == true || -n "$project" ) ]]; then
+    die 'usage: sbx update --check | sbx update [--yes] [<project>]'
+  fi
+
+  if [[ "$auto" == true ]]; then
+    [[ "$check" == false && "$assume_yes" == false && -z "$project" ]] \
+      || die 'usage: sbx update --auto-check'
+    automatic_update_check
+    return
+  fi
+
+  require_command git
+  require_command timeout
+  source="$(update_source_checkout)" \
+    || die 'the installed runtime has no available Git source checkout; clone the kit and run ./install.sh'
+  load_update_tracking "$source" \
+    || die "source checkout must be on a branch with an upstream: $source"
+
+  if [[ -n "$project" ]]; then
+    load_project "$project"
+    ensure_project_layout
+    session_is_active && die "cannot update project '$project' while an agent task session is active"
+  fi
+
+  local_sha="$(git -C "$source" rev-parse HEAD)"
+  remote_sha="$(remote_update_sha "$source")" \
+    || die "could not read $UPDATE_REMOTE/$UPDATE_REMOTE_BRANCH"
+  printf 'Installed kit: %s\nSource checkout: %s\nBranch: %s\nTracked remote: %s\nRemote URL: %s\nCurrent commit: %s\nTarget commit: %s\n' \
+    "$KIT_VERSION" "$source" "$UPDATE_BRANCH" "$UPDATE_UPSTREAM" \
+    "$UPDATE_REMOTE_URL" "$local_sha" "$remote_sha"
+
+  if [[ "$check" == true ]]; then
+    if [[ "$local_sha" == "$remote_sha" && "$(source_kit_version "$source")" == "$KIT_VERSION" ]]; then
+      note 'Update available: no'
+    else
+      note 'Update available: yes'
+      note 'Run: sbx update [<project>]'
+    fi
+    record_update_check
+    return
+  fi
+
+  [[ -z "$(git -C "$source" status --porcelain)" ]] \
+    || die "source checkout has local changes; review or preserve them before updating: $source"
+
+  git -C "$source" fetch --prune "$UPDATE_REMOTE"
+  remote_sha="$(git -C "$source" rev-parse "$UPDATE_UPSTREAM")"
+  if [[ "$local_sha" == "$remote_sha" && "$(source_kit_version "$source")" == "$KIT_VERSION" ]]; then
+    note 'Agent Sandbox Kit is already current; no changes made.'
+    return
+  fi
+  git -C "$source" merge-base --is-ancestor "$local_sha" "$remote_sha" \
+    || die 'source checkout cannot be fast-forwarded; resolve its branch state manually'
+  printf 'Pending update:\n'
+  git -C "$source" log --oneline --decorate "$local_sha..$remote_sha"
+  printf 'Change summary:\n'
+  git -C "$source" diff --stat "$local_sha..$remote_sha"
+  printf 'Review command:\n  git -C %q diff %q\n' "$source" "$local_sha..$remote_sha"
+  printf "Confirming runs the fetched checkout's tests and installer with your WSL user permissions.\n"
+  if [[ "$(source_kit_version "$source")" != "$KIT_VERSION" ]] \
+      || ! git -C "$source" diff --quiet "$local_sha" "$remote_sha" -- \
+    versions.lock images config container; then
+    image_inputs_changed=true
+  fi
+
+  if [[ "$assume_yes" != true ]]; then
+    local answer
+    read -r -p 'Apply this tracked fast-forward update? [y/N] ' answer
+    [[ "$answer" == [Yy] || "$answer" == [Yy][Ee][Ss] ]] || {
+      note 'Update cancelled; no files changed.'
+      return
+    }
+  fi
+
+  git -C "$source" merge --ff-only "$remote_sha"
+  bash "$source/tests/static.sh"
+  bash "$source/install.sh"
+
+  local installed_sbx
+  installed_sbx="${XDG_BIN_HOME:-${HOME}/.local/bin}/sbx"
+  if [[ "$image_inputs_changed" == true ]]; then
+    "$installed_sbx" build
+  else
+    note 'Image inputs unchanged; skipping image rebuild.'
+  fi
+  if [[ -n "$project" ]]; then
+    "$installed_sbx" upgrade "$project"
+    note "Next: sbx codex doctor $project"
+  else
+    note 'Next: sbx upgrade <project>'
+  fi
+  record_update_check
 }
 
 session_is_active() {
@@ -1438,6 +1638,7 @@ main() {
   case "$command" in
     init) cmd_init "$@" ;;
     version) cmd_version "$@" ;;
+    update) cmd_update "$@" ;;
     upgrade) cmd_upgrade "$@" ;;
     build) cmd_build "$@" ;;
     context) cmd_context "$@" ;;

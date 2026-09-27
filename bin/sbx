@@ -24,6 +24,8 @@ Agent Sandbox Kit
 Usage:
   sbx <agent> <action> <project> [arguments]
   sbx init <project>
+  sbx update --check
+  sbx update [--yes] [<project>]
   sbx upgrade [--dry-run] <project>
   sbx build
   sbx version
@@ -34,6 +36,8 @@ Actions: run, login, auth-status, logout, doctor, shell, exec, reset-auth
 
 Examples:
   sbx codex run my-project
+  sbx update --check
+  sbx update my-project
   sbx opencode login my-project
   sbx codex exec my-project -- npm test
 
@@ -46,7 +50,7 @@ main() {
   local first="${1:-}"
   case "$first" in
     help|-h|--help|'') usage; [[ -n "$first" ]] || return 2; return 0 ;;
-    init|build|upgrade|version|context)
+    init|build|update|upgrade|version|context)
       shift
       exec "$SBX_CTL" "$first" "$@"
       ;;
@@ -59,6 +63,9 @@ main() {
   handler="$(sbx_adapter_handler "$agent" "$action")"
   [[ -n "$handler" ]] \
     || die "invalid action '$action' for agent '$agent' (expected: ${SBX_ADAPTER_ACTIONS[$agent]})"
+  if [[ "$action" == run ]]; then
+    "$SBX_CTL" update --auto-check || true
+  fi
   shift 2
   exec "$SBX_CTL" "$agent" "$action" "$@"
 }

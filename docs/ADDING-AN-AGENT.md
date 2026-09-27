@@ -1,8 +1,8 @@
 # Adding an Agent
 
 Agent Sandbox Kit uses an explicit allowlist. Merely adding an adapter file does
-not enable an agent. A new agent such as Claude Code requires all of the work
-below; Claude Code is not installed or implemented by this repository.
+not enable an agent. Supporting another agent requires each integration and
+review step below.
 
 ## Files and integration points
 
@@ -26,8 +26,8 @@ Use the repository naming classes consistently: shared boundary infrastructure
 uses neutral `agent-sandbox` or generic names; an agent-specific adapter,
 Dockerfile, entrypoint, helper, test, report, variable, and message includes
 the agent ID. Register canonical actions to allowlisted `cmd_*` handlers;
-do not add implicit or suffixed legacy CLI routes. Do not rename persistent volume names, image labels or tags,
-or `project.env` keys without a tested automatic migration.
+do not add implicit aliases. Keep persistent volume names, image labels, tags,
+and `project.env` keys explicit and covered by tests.
 
 ## Required security review
 
@@ -45,10 +45,9 @@ whether task-time refresh must persist. Use a dedicated per-project volume,
 mount it read-only for run/shell/exec, mount no workspace during authentication,
 and implement a fail-closed before/after prune with an exact file allowlist.
 Never assume another agent's `auth.json` format or lifecycle applies.
-Define authentication compatibility independently from `KIT_VERSION`. Label
-new volumes with `io.codex-sandbox.auth.schema` and agent identity, and document
-any narrowly accepted legacy labels; patch releases are informational labels,
-not authentication compatibility gates.
+Version the credential format independently from `KIT_VERSION`. Label volumes
+with `io.codex-sandbox.auth.schema` and the agent identity, then fail closed on
+an unexpected project, agent, management, or schema label.
 
 An adapter may select only reviewed agent metadata and existing handler routes.
 It must not control mounts, network mode, capabilities, devices, ports,
