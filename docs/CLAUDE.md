@@ -10,18 +10,19 @@ existing CPU, memory, and process limits. Network access is enabled.
 ## First use
 
 Install and build the kit, then initialize and clone your project using the
-[README quick start](../README.md#quick-start). For an existing project, run
-these commands in WSL, replacing `my-project` with its registered name:
+[README quick start](../README.md#quick-start). Once your project is initialized
+and cloned, log into Claude and start its first session with these commands in
+WSL, replacing `my-project` with its registered name:
 
 ```bash
-sbx claude doctor my-project &&
 sbx claude login my-project &&
-sbx claude auth-status my-project &&
 sbx claude run my-project
 ```
 
-If `doctor` reports stale image references, follow the recovery command it
-prints before logging in. The [update guide](OPERATOR-GUIDE.md#installation-and-updates)
+For later sessions, use only `sbx claude run my-project` unless the login expires.
+
+If a command reports stale image references, follow its printed recovery
+command. The [update guide](OPERATOR-GUIDE.md#installation-and-updates)
 explains rebuilding and applying selected images.
 
 Login runs without mounting the repository, `/context`, or `/data`. Follow the
@@ -32,10 +33,11 @@ outside this adapter's tested scope.
 
 ## Update Claude
 
+Exit the current agent session before updating its project.
+
 ```bash
-sbx claude-update --check &&
 sbx claude-update my-project &&
-sbx claude doctor my-project
+sbx claude run my-project
 ```
 
 The command proposes an exact stable release from npm's `latest` tag, builds
@@ -43,6 +45,8 @@ and verifies its image after confirmation, then changes only Claude's image
 reference in the named project. It preserves project files and saved logins.
 This can select a newer version than Anthropic's delayed `stable` channel.
 Use `sbx update my-project` for kit updates.
+Use `sbx claude-update --check` for an optional update preview or
+`sbx claude doctor my-project` to check the setup without starting a session.
 
 ## Storage and commands
 
@@ -95,7 +99,7 @@ for kit updates.
 ## Validation
 
 ```bash
-bash tests/static.sh
+bash tests/static.sh &&
 bash tests/smoke-claude.sh
 ```
 

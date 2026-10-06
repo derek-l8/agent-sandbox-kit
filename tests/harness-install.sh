@@ -68,7 +68,10 @@ for kind in ('wrapper', 'platform'):
         metadata.update(os=['linux'], cpu=['x64'])
     else:
         mapping = 'npm:@openai/codex@9.999.0-linux-x64' if agent == 'codex' else '9.999.0'
-        metadata.update(optionalDependencies={dependency: mapping}, bin={agent: entry})
+        # npm normalizes OpenCode's ./ prefix in registry metadata, while the
+        # integrity-verified archive retains it in package.json.
+        wrapper_entry = './' + entry if agent == 'opencode' else entry
+        metadata.update(optionalDependencies={dependency: mapping}, bin={agent: wrapper_entry})
     files = {'package.json': json.dumps(metadata).encode()}
     if kind == 'wrapper':
         files[entry] = b'#!/bin/sh\nexit 1\n'  # must be replaced by the pinned native fixture
@@ -96,6 +99,25 @@ PY
     mv "$work/original" "$ARCHIVES/$archive"
   done
   printf 'PASS: %s wrapper and platform tampering fails before installation\n' "$agent"
+  cp "$ARCHIVES/wrapper.tgz" "$work/original-wrapper"
+  python3 - "$ARCHIVES/wrapper.tgz" "$agent" <<'PY'
+import io, json, tarfile, sys
+with tarfile.open(sys.argv[1], 'r:gz') as archive:
+    data = json.load(archive.extractfile('package/package.json'))
+data['bin'][sys.argv[2]] = './../outside'
+encoded = json.dumps(data).encode()
+with tarfile.open(sys.argv[1], 'w:gz') as archive:
+    entry = tarfile.TarInfo('package/package.json'); entry.size = len(encoded)
+    archive.addfile(entry, io.BytesIO(encoded))
+PY
+  export "${prefix}_PACKAGE_INTEGRITY=$(hash_archive "$ARCHIVES/wrapper.tgz")"
+  : > "$NPM_LOG"
+  if bash "$root/container/install-harness.sh" "$agent" >"$work/out" 2>"$work/err"; then exit 1; fi
+  grep -q 'unsupported wrapper entrypoint' "$work/err"
+  [[ ! -s "$NPM_LOG" ]]
+  mv "$work/original-wrapper" "$ARCHIVES/wrapper.tgz"
+  export "${prefix}_PACKAGE_INTEGRITY=$(hash_archive "$ARCHIVES/wrapper.tgz")"
+  printf 'PASS: %s integrity-valid unexpected wrapper path is rejected before installation\n' "$agent"
   python3 - "$ARCHIVES/platform.tgz" <<'PY'
 import io, json, tarfile, sys
 with tarfile.open(sys.argv[1], 'r:gz') as archive:

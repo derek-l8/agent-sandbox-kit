@@ -14,18 +14,24 @@ drivers, PyTorch, or project-specific Python/JavaScript libraries.
 
 ## Python projects
 
-Run these commands **inside a task container**, in `/workspace`:
+Run these commands **inside a task container**, in `/workspace`. Choose the
+setup matching your project.
+
+For a uv project, respect its declared Python version and lockfile:
 
 ```bash
-# For a uv project, respect its declared Python version and lockfile.
-uv sync --locked
+uv sync --locked &&
 uv run python --version
-
-# For a requirements.txt project:
-uv venv --python 3.14 /data/venv
-uv pip install --python /data/venv/bin/python -r requirements.txt
-/data/venv/bin/python -m your_module
 ```
+
+For a `requirements.txt` project that supports Python 3.14:
+
+```bash
+uv venv --python 3.14 /data/venv &&
+uv pip install --python /data/venv/bin/python -r requirements.txt
+```
+
+Run its Python commands using `/data/venv/bin/python`.
 
 `UV_PROJECT_ENVIRONMENT=/data/venv` puts uv project environments outside Git.
 This does not activate that environment for bare `python` commands: use
@@ -43,7 +49,7 @@ existing project or changes its version declarations.
 specifically invokes `python -m pip`, bootstrap it without downloading pip:
 
 ```bash
-/data/venv/bin/python -m ensurepip --default-pip
+/data/venv/bin/python -m ensurepip --default-pip &&
 /data/venv/bin/python -m pip install -r requirements.txt
 ```
 

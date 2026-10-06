@@ -136,8 +136,12 @@ printf 'PASS: launch discovery works without a Git source, caches failed attempt
 
 rm "$XDG_CACHE_HOME/agent-sandbox-kit/"*-update-check
 calls="$(wc -l < "$METADATA/calls")"
-"$ctl" update --auto-check >"$work/out" 2>"$work/err"
+"$ctl" update --auto-check probe >"$work/out" 2>"$work/err"
 for notice in CODEX OPENCODE CLAUDE; do grep -q "$notice UPDATE AVAILABLE:" "$work/err"; done
+for harness in codex opencode claude; do
+  grep -q "^Run: sbx $harness-update probe$" "$work/err"
+  grep -q "^Optional preview: sbx $harness-update --check$" "$work/err"
+done
 [[ "$(( calls + 3 ))" -eq "$(wc -l < "$METADATA/calls")" ]]
 "$ctl" update --auto-check >"$work/out" 2>"$work/err"
 [[ ! -s "$work/err" && "$(( calls + 3 ))" -eq "$(wc -l < "$METADATA/calls")" ]]
@@ -170,6 +174,8 @@ printf 'PASS: image label mismatch fails before activating the CLI selection eve
 
 : > "$DOCKER_LOG"
 "$ctl" ${agent}-update --yes --version 9.999.0 probe >"$work/apply.out"
+grep -q "^Next: sbx $agent run probe$" "$work/apply.out"
+! grep -Eq 'doctor|Next: sbx build' "$work/apply.out"
 [[ "$(grep -c '^build ' "$DOCKER_LOG")" -eq 1 ]]
 grep -q "^${prefix}_VERSION=9.999.0$" "$kit/${agent}-release.lock"
 grep -Eq "^${project_image_key}=local/codex-sandbox-${image_name}:3.3.0-${agent}-9.999.0-[a-f0-9]{16}$" "$config"
