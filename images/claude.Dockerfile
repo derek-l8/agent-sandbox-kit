@@ -21,11 +21,10 @@ ENV UV_PYTHON_INSTALL_DIR=/data/python \
     UV_CACHE_DIR=/home/node/.cache/uv \
     UV_LINK_MODE=copy
 
-RUN test "$(npm view "@anthropic-ai/claude-code@${CLAUDE_VERSION}" dist.integrity)" = "${CLAUDE_PACKAGE_INTEGRITY}" \
-    && test "$(npm view "@anthropic-ai/claude-code-linux-x64@${CLAUDE_VERSION}" dist.integrity)" = "${CLAUDE_LINUX_X64_INTEGRITY}" \
-    && npm install --global "@anthropic-ai/claude-code@${CLAUDE_VERSION}" \
-    && npm cache clean --force \
-    && test "$(claude --version | awk '{print $1}')" = "${CLAUDE_VERSION}"
+COPY container/install-harness.sh /tmp/install-harness.sh
+RUN CLAUDE_VERSION="${CLAUDE_VERSION}" CLAUDE_PACKAGE_INTEGRITY="${CLAUDE_PACKAGE_INTEGRITY}" \
+    CLAUDE_LINUX_X64_INTEGRITY="${CLAUDE_LINUX_X64_INTEGRITY}" \
+    bash /tmp/install-harness.sh claude && rm /tmp/install-harness.sh
 
 COPY config/claude-managed.json /etc/claude-code/managed-settings.json
 COPY config/agent-workspace.md /etc/agent-workspace.md

@@ -24,11 +24,10 @@ ENV UV_PYTHON_INSTALL_DIR=/data/python \
 COPY config/agent-workspace.md /etc/agent-workspace.md
 RUN chmod 0444 /etc/agent-workspace.md
 
-RUN test "$(npm view "opencode-ai@${OPENCODE_VERSION}" dist.integrity)" = "${OPENCODE_PACKAGE_INTEGRITY}" \
-    && test "$(npm view "opencode-linux-x64@${OPENCODE_VERSION}" dist.integrity)" = "${OPENCODE_LINUX_X64_INTEGRITY}" \
-    && npm install --global "opencode-ai@${OPENCODE_VERSION}" \
-    && npm cache clean --force \
-    && test "$(opencode --version | grep -oE '[0-9]+\.[0-9]+\.[0-9]+' | head -n1)" = "${OPENCODE_VERSION}"
+COPY container/install-harness.sh /tmp/install-harness.sh
+RUN OPENCODE_VERSION="${OPENCODE_VERSION}" OPENCODE_PACKAGE_INTEGRITY="${OPENCODE_PACKAGE_INTEGRITY}" \
+    OPENCODE_LINUX_X64_INTEGRITY="${OPENCODE_LINUX_X64_INTEGRITY}" \
+    bash /tmp/install-harness.sh opencode && rm /tmp/install-harness.sh
 
 COPY config/opencode-managed.json /etc/opencode/opencode.json
 COPY container/check-common.sh /usr/local/lib/codex-sandbox/check-common.sh

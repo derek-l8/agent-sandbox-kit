@@ -1,3 +1,9 @@
 .test-state/
 *.tmp
+/codex-release.lock*
+/opencode-release.lock*
+/claude-release.lock*
+/.codex-release.*
+/.opencode-release.*
+/.claude-release.*
 

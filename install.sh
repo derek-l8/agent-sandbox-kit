@@ -10,6 +10,8 @@ target="${user_bin}/sbx"
 runtime_items=(bin adapters config container images versions.lock)
 
 mkdir -p "$user_bin" "$data_home"
+source "$kit_root/bin/harness-update.sh"
+acquire_runtime_update_lock "$runtime_root"
 if [[ -e "$target" && ! -L "$target" ]]; then
   printf 'ERROR: refusing to overwrite existing file: %s\n' "$target" >&2
   exit 1
@@ -50,13 +52,34 @@ for item in "${runtime_items[@]}"; do
   }
   cp -a -- "${kit_root}/${item}" "$stage/"
 done
+# Keep independent harness selections and backups across source-kit reinstalls.
+# The staged launcher validates them; newer upstream baselines supersede older selections.
+for harness in codex opencode claude; do
+  release_file="$runtime_root/${harness}-release.lock"
+  if [[ -e "$release_file" || -L "$release_file" ]]; then
+    [[ -f "$release_file" && ! -L "$release_file" ]] || {
+      printf 'ERROR: invalid harness release lock: %s\n' "$release_file" >&2
+      exit 1
+    }
+    cp -p -- "$release_file" "$stage/"
+  fi
+  for saved_lock in "$release_file".pre-update-*.bak; do
+    [[ -e "$saved_lock" || -L "$saved_lock" ]] || continue
+    [[ -f "$saved_lock" && ! -L "$saved_lock" ]] || {
+      printf 'ERROR: invalid harness selection backup: %s\n' "$saved_lock" >&2
+      exit 1
+    }
+    cp -p -- "$saved_lock" "$stage/"
+  done
+done
 printf '%s\n' "$kit_root" > "$stage/source-path"
 chmod 0600 "$stage/source-path"
 
 for required in \
   container/install-toolchain.sh \
+  container/install-harness.sh \
   adapters/claude.sh config/claude-managed.json images/claude.Dockerfile container/check-claude-networked.sh container/check-claude-login.sh container/start-claude-session.sh container/start-claude-auth-session.sh container/run-with-claude-auth.sh container/prune-claude-auth-volume.sh \
-  bin/sbx bin/sandboxctl bin/context.sh adapters/registry.sh adapters/codex.sh adapters/opencode.sh \
+  bin/sbx bin/sandboxctl bin/context.sh bin/harness-update.sh bin/harness-release.py adapters/registry.sh adapters/codex.sh adapters/opencode.sh \
   config/agent-workspace.md config/codex-config.toml config/codex-requirements.toml config/opencode-managed.json \
   images/codex-networked.Dockerfile images/opencode.Dockerfile \
   container/check-common.sh container/check-codex-networked.sh \
@@ -74,6 +97,7 @@ bash -n "$stage/bin/sbx"
 bash -n "$stage/bin/sandboxctl"
 bash -n "$stage/bin/context.sh"
 "$stage/bin/sbx" --help >/dev/null
+"$stage/bin/sandboxctl" version >/dev/null
 ln -s "${runtime_root}/bin/sbx" "$link_stage"
 
 if [[ -d "$runtime_root" ]]; then

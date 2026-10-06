@@ -26,6 +26,12 @@ Usage:
   sbx init <project>
   sbx update --check
   sbx update [--yes] [<project>]
+  sbx codex-update --check [--version X.Y.Z]
+  sbx codex-update [--yes] [--version X.Y.Z] [<project>]
+  sbx opencode-update --check [--version X.Y.Z]
+  sbx opencode-update [--yes] [--version X.Y.Z] [<project>]
+  sbx claude-update --check [--version X.Y.Z]
+  sbx claude-update [--yes] [--version X.Y.Z] [<project>]
   sbx upgrade [--dry-run] <project>
   sbx build
   sbx version
@@ -50,7 +56,7 @@ main() {
   local first="${1:-}"
   case "$first" in
     help|-h|--help|'') usage; [[ -n "$first" ]] || return 2; return 0 ;;
-    init|build|update|upgrade|version|context)
+    init|build|update|codex-update|opencode-update|claude-update|upgrade|version|context)
       shift
       exec "$SBX_CTL" "$first" "$@"
       ;;

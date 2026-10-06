@@ -28,6 +28,7 @@ before="$(sha256sum "$config")"
 "$ctl" upgrade --dry-run "$slug" | grep -q 'Dry run: no files changed.'
 [[ "$before" == "$(sha256sum "$config")" ]]
 "$ctl" upgrade "$slug" >/dev/null
+[[ ! -d "$CODEX_SANDBOX_WORKSPACES_ROOT/$slug/control/.session-lock" ]]
 for image_key in PROJECT_NETWORK_IMAGE PROJECT_OPENCODE_IMAGE PROJECT_CLAUDE_IMAGE; do
   grep -q "^$image_key=.*:3.3.0$" "$config"
 done
@@ -56,12 +57,26 @@ grep -q 'while an agent task session is active' "$work/err"
 grep -q ':stale$' "$CODEX_SANDBOX_WORKSPACES_ROOT/active-lock/control/project.env"
 printf 'PASS: upgrade refuses an active cross-agent session lock\n'
 
+# Simulate another command acquiring the project after the initial status check.
+sed '$d' "$ctl" > "$work/library.sh"
+make_project race-probe
+config="$CODEX_SANDBOX_WORKSPACES_ROOT/race-probe/control/project.env"
+before="$(sha256sum "$config")"
+if bash -c 'source "$1"; KIT_ROOT="$2"; VERSIONS_FILE="$2/versions.lock"; read_versions;
+  session_is_active(){ mkdir "$(session_lock_dir)"; printf "pid=%s\n" "$$" > "$(session_lock_dir)/owner.txt"; return 1; };
+  cmd_upgrade race-probe' _ "$work/library.sh" "$root" >"$work/out" 2>"$work/err"; then exit 1; fi
+grep -q 'a session is already active' "$work/err"
+[[ "$before" == "$(sha256sum "$config")" ]]
+printf 'PASS: a session acquired after the status check prevents project replacement\n'
+
 # Exercise the real rollback branch by overriding only its validation helper.
 sed '$d' "$ctl" > "$work/library.sh"
 make_project rollback-probe
 config="$CODEX_SANDBOX_WORKSPACES_ROOT/rollback-probe/control/project.env"
 before="$(sha256sum "$config")"
-if bash -c 'source "$1"; read_versions; validate_upgraded_project(){ return 1; }; cmd_upgrade rollback-probe' _ "$work/library.sh" \
+if bash -c 'source "$1"; KIT_ROOT="$2"; VERSIONS_FILE="$2/versions.lock"; read_versions; validate_upgraded_project(){ return 1; }; cmd_upgrade rollback-probe' _ "$work/library.sh" "$root" \
     >"$work/out" 2>"$work/err"; then exit 1; fi
 [[ "$before" == "$(sha256sum "$config")" ]]
+grep -q 'failed validation; restored original' "$work/err"
+[[ ! -d "$CODEX_SANDBOX_WORKSPACES_ROOT/rollback-probe/control/.session-lock" ]]
 printf 'PASS: failed replacement validation restores the original configuration\n'

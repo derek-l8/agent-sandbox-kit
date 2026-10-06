@@ -21,11 +21,10 @@ ENV UV_PYTHON_INSTALL_DIR=/data/python \
     UV_CACHE_DIR=/home/node/.cache/uv \
     UV_LINK_MODE=copy
 
-RUN test "$(npm view "@openai/codex@${CODEX_VERSION}" dist.integrity)" = "${CODEX_PACKAGE_INTEGRITY}" \
-    && test "$(npm view "@openai/codex@${CODEX_VERSION}-linux-x64" dist.integrity)" = "${CODEX_LINUX_X64_INTEGRITY}" \
-    && npm install --global "@openai/codex@${CODEX_VERSION}" \
-    && npm cache clean --force \
-    && test "$(codex --version | awk '{print $2}')" = "${CODEX_VERSION}"
+COPY container/install-harness.sh /tmp/install-harness.sh
+RUN CODEX_VERSION="${CODEX_VERSION}" CODEX_PACKAGE_INTEGRITY="${CODEX_PACKAGE_INTEGRITY}" \
+    CODEX_LINUX_X64_INTEGRITY="${CODEX_LINUX_X64_INTEGRITY}" \
+    bash /tmp/install-harness.sh codex && rm /tmp/install-harness.sh
 
 COPY config/codex-config.toml /etc/codex/config.toml
 COPY config/codex-requirements.toml /etc/codex/requirements.toml

@@ -1,70 +1,146 @@
 # Operator Guide
 
-This guide covers daily use from WSL. Keep the Agent Sandbox Kit checkout,
-each project's `control` directory, and Git promotion actions outside agent
-containers. Examples use the durable checkout name `agent-sandbox-kit`.
+Use this guide for an installed kit in WSL. Examples use `my-project` and
+Codex; substitute your project name and `opencode` or `claude` as needed.
+Keep the kit checkout and Git review outside agent containers.
 
 ## Installation and updates
 
+For a first installation, follow the [README quick start](../README.md#quick-start),
+including its requirements and shell `PATH` setup. Reinstall from the intended
+kit checkout with `./install.sh`; it validates a staged runtime before replacing
+the installed copy. The runtime lives at
+`${XDG_DATA_HOME:-$HOME/.local/share}/agent-sandbox-kit`, with `sbx` linked from
+`${XDG_BIN_HOME:-$HOME/.local/bin}`.
+
+### Automatic checks
+
+Before an agent `run`, the launcher checks the tracked kit Git remote and
+published Codex, OpenCode, and Claude Code releases independently. Each check
+runs when its last attempt is at least 24 hours old. A notice lets the selected
+CLI continue; it does not install a release or change project configuration.
+Failed automatic checks stay silent and are cached too. Explicit checks retry
+regardless of the cache.
+
+The checks run concurrently. Git has a 10-second request limit; each harness
+has a 15-second resolution limit, adding at most 15 seconds of network waiting
+to a launch. Harness discovery works even if the recorded kit checkout is
+unavailable. Host release checks need `python3` and `timeout`; automatic checks
+and installation also need `flock`.
+
+Set an environment variable to `1` to disable the corresponding automatic checks:
+
+| Variable | Checks disabled |
+| --- | --- |
+| `SBX_DISABLE_UPDATE_CHECK` | Kit and all harnesses |
+| `SBX_DISABLE_HARNESS_UPDATE_CHECK` | All harnesses |
+| `SBX_DISABLE_CODEX_UPDATE_CHECK` | Codex |
+| `SBX_DISABLE_OPENCODE_UPDATE_CHECK` | OpenCode |
+| `SBX_DISABLE_CLAUDE_UPDATE_CHECK` | Claude Code |
+
+For example, `SBX_DISABLE_UPDATE_CHECK=1 sbx codex run my-project` skips
+discovery for that invocation.
+
+### Update one harness
+
 ```bash
-cd /path/to/agent-sandbox-kit
-./install.sh
+sbx codex-update --check &&
+sbx codex-update my-project &&
+sbx codex doctor my-project &&
+sbx codex run my-project
 ```
 
-This installs the complete runtime under
-`${XDG_DATA_HOME:-$HOME/.local/share}/agent-sandbox-kit` and creates the
-user-facing launcher at `${XDG_BIN_HOME:-$HOME/.local/bin}/sbx`, without root
-access. If needed, the installer prints the `PATH` line to add. The installed
-command is independent of the checkout.
+Use `opencode-update` or `claude-update` for the other harnesses. A newer
+release is proposed by exact version and integrity pins. Confirmation builds
+and verifies only that harness's image, saves its host selection, and changes
+only its reference in the named project. The project configuration is backed
+up; repository files, resource settings, and logins are preserved. Applying
+an already-selected release verifies its image and updates the project without
+rebuilding.
 
-The installer records this source checkout. Before an agent `run`, the host
-launcher makes at most one bounded remote update check every 24 hours. It only
-prints a notice; it never changes the source, installed runtime, images, or
-project. Set `SBX_DISABLE_UPDATE_CHECK=1` to disable the check.
+Use `--version X.Y.Z` to request an exact stable release or `--yes` to skip
+confirmation. Downgrades are refused. Discovery uses each vendor's npm `latest`
+tag and accepts only non-prerelease versions. Claude uses npm's latest release,
+which can differ from Anthropic's delayed `stable` channel.
 
-Check or install an update with:
+Without a project, the command builds and saves the host selection while
+existing projects retain their references. Rerun `sbx codex-update my-project`
+to apply only Codex later, or use `sbx upgrade my-project` to apply all selected
+harness images.
+
+### Update the kit
 
 ```bash
-sbx update --check
-sbx update my-project
+sbx update --check &&
+sbx update my-project &&
 sbx codex doctor my-project
 ```
 
-Substitute the appropriate agent for the final `doctor`. `sbx update` requires
-a clean tracked branch and a fast-forward, then prints the remote URL, exact
-commits, diff summary, and a review command. Confirming allows the fetched
-checkout's tests and installer to run with your WSL user permissions. The
-updater validates and installs the runtime, rebuilds the images only when
-`versions.lock`, `images/`, `config/`, or `container/` changed, and upgrades the
-named project.
+The kit checkout must be clean, on a branch with an upstream, and able to
+fast-forward. Review or preserve local kit edits before updating. The project
+repository is a separate directory and its files are not rewritten by this command.
 
-The source checkout is updated before validation. If validation fails, the
-installed runtime and project remain unchanged while the source stays at the
-fetched commit for inspection. An image-build failure can leave the validated
-runtime installed but the project unchanged; rerun `sbx build`, then
-`sbx upgrade my-project`. `--yes` skips only the confirmation prompt.
+`sbx update` prints the remote URL, exact commits, diff summary, and a review
+command before confirmation. Confirming permits the fetched checkout's tests
+and installer to run with your WSL user permissions. It fast-forwards source,
+runs the Docker-free suite, installs the runtime, rebuilds changed image inputs,
+and switches all image references in the named project. `--yes` skips confirmation.
 
-If the recorded checkout is moved or deleted, normal agent commands continue
-to use the copied runtime. Clone the kit and rerun `./install.sh` to restore the
-update path.
+An already-current kit still applies stale references in a named project.
+The updater compares installed files with the source, so manually pulling
+runtime or image-input changes is detected even without a kit version bump.
+README-only changes need no runtime replacement.
+
+### Rebuild and apply saved selections
+
+`sbx build` rebuilds all selected images without discovering releases or
+editing projects. `sbx upgrade my-project` backs up and atomically replaces
+all project image references with the current selections; it does not build
+or download. Use `sbx upgrade --dry-run my-project` to inspect the proposed
+references first. Project upgrades hold the shared session lock while changing
+configuration.
+
+`sbx version` shows effective CLI versions, image tags, and selection-file
+paths. CLI selections and their `.pre-update-*.bak` backups survive kit
+reinstalls. A newer kit baseline supersedes a lower local CLI selection.
+See [version policy](MAINTAINER-SECURITY.md#version-policy) for archive verification
+and the host selection format.
+
+### Failed updates
+
+Registry or build failures preserve the previous CLI selection and project.
+If a session starts during a CLI build, the new verified host selection can
+be saved while the project stays unchanged. Exit that session and rerun the
+same harness update. Concurrent installers and version updates are refused.
+
+A kit update advances the source before testing it. If tests fail, the source
+remains at the fetched commit for inspection while the installed runtime and
+project stay unchanged. If an image build fails after installation, run
+`sbx build`, then `sbx upgrade my-project` once the build succeeds.
+
+If the recorded checkout is moved or deleted, existing agent commands still
+use the copied runtime. Clone the kit and run `./install.sh` again to restore
+the source update path.
 
 ## Project setup and daily use
 
+Replace `<repo-url>` with your own committed repository. For OpenCode or Claude
+Code, replace `codex` with `opencode` or `claude`.
+
 ```bash
-sbx init my-project
-git clone https://github.com/OWNER/REPOSITORY.git \
-  "$HOME/agent-workspaces/my-project/repo"
-sbx codex doctor my-project
-sbx codex login my-project
+sbx init my-project &&
+git clone '<repo-url>' \
+  "${CODEX_SANDBOX_WORKSPACES_ROOT:-$HOME/agent-workspaces}/my-project/repo" &&
+sbx codex doctor my-project &&
+sbx codex login my-project &&
 sbx codex run my-project
-sbx codex shell my-project
-sbx codex exec my-project -- npm test
 ```
 
-For OpenCode or Claude Code, replace `codex` with `opencode` or `claude`.
-See [Claude authentication and limits](CLAUDE.md). Initialize an empty `repo`
-directory and create a trusted baseline commit before autonomous work. Linked
-Git worktrees are not supported.
+For an existing project, start with `sbx codex run my-project`. Use
+`sbx codex shell my-project` for a diagnostic shell or
+`sbx codex exec my-project -- npm test` to run a command.
+See [Claude authentication and limits](CLAUDE.md). Create a trusted baseline
+commit before autonomous work. Linked Git worktrees are not supported.
 
 The launcher checks the container, writes a report under `control/logs`, and
 then starts it. All agents share a per-project lock. Networked runners receive
@@ -97,14 +173,17 @@ the repository remains possible. Back up important data separately.
 
 ## Authentication maintenance
 
+Check the current login with:
+
 ```bash
 sbx codex auth-status my-project
-sbx codex logout my-project
-sbx codex reset-auth my-project --yes
-sbx opencode auth-status my-project
-sbx opencode logout my-project
-sbx opencode reset-auth my-project --yes
 ```
+
+Use `opencode` or `claude` for that harness's login. To sign out, run
+`sbx codex logout my-project`. If an error calls for a credential reset,
+inspect its exact agent and project before running the printed `reset-auth`
+command. Reset deletes only that agent's saved project login and requires
+`--yes`; log in again afterward. It leaves project files and other logins intact.
 
 Task, shell, and exec sessions mount authentication read-only. Cleanup helpers
 prune unexpected persistent auth content before and after commands and fail
@@ -120,8 +199,10 @@ paths read-only.
 
 ```bash
 sbx codex doctor my-project
-sbx opencode doctor my-project
 ```
+
+Replace `codex` with your harness. The default workspace root can be changed
+with `CODEX_SANDBOX_WORKSPACES_ROOT`; use that root for the control-file path too.
 
 Do not bypass a failed boundary check. Inspect the layout, control file, pinned
 images, and host reports under `control/logs`.
@@ -156,7 +237,9 @@ Run these from the reviewed host checkout, never from an agent container:
 bash tests/static.sh
 bash tests/smoke-codex.sh
 bash tests/smoke-opencode.sh
+bash tests/smoke-claude.sh
+bash tests/smoke-toolchain.sh
 ```
 
-The two smoke tests are Docker-based and model-free. Run them only after the
+The smoke tests are Docker-based and model-free. Run them only after the
 pinned images have been built; neither performs authentication.

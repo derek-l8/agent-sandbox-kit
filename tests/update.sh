@@ -37,7 +37,7 @@ ctl="$xdg_data/agent-sandbox-kit/bin/sandboxctl"
 runtime_source="$xdg_data/agent-sandbox-kit/source-path"
 [[ "$(cat "$runtime_source")" == "$source_checkout" ]]
 
-common_env=(HOME="$home" XDG_BIN_HOME="$xdg_bin" XDG_DATA_HOME="$xdg_data" XDG_CACHE_HOME="$xdg_cache" PATH=/usr/bin:/bin)
+common_env=(HOME="$home" XDG_BIN_HOME="$xdg_bin" XDG_DATA_HOME="$xdg_data" XDG_CACHE_HOME="$xdg_cache" SBX_DISABLE_HARNESS_UPDATE_CHECK=1 PATH=/usr/bin:/bin)
 for args in '--check --yes' '--check probe'; do
   read -ra invalid_args <<< "$args"
   if env "${common_env[@]}" "$ctl" update "${invalid_args[@]}" >"$work/invalid.out" 2>"$work/invalid.err"; then
@@ -51,6 +51,27 @@ printf 'PASS: update check rejects install-only arguments\n'
 output="$(env "${common_env[@]}" "$ctl" update --check)"
 [[ "$output" == *'Update available: no'* ]]
 printf 'PASS: update check reports a synchronized tracked source\n'
+
+workspaces="$work/workspaces"
+project_env=(CODEX_SANDBOX_WORKSPACES_ROOT="$workspaces")
+env "${common_env[@]}" "${project_env[@]}" "$ctl" init stale-project >/dev/null
+mkdir -p "$workspaces/stale-project/repo/.git"
+config="$workspaces/stale-project/control/project.env"
+sed -i 's/:3.3.0/:stale/g' "$config"
+cp "$config" "$work/project-before"
+env "${common_env[@]}" "${project_env[@]}" "$ctl" update --yes stale-project >"$work/current-project.out"
+grep -q 'Agent Sandbox Kit is already current.' "$work/current-project.out"
+grep -q '^PROJECT_NETWORK_IMAGE=.*:3.3.0$' "$config"
+backup="$(find "$(dirname "$config")" -name 'project.env.pre-upgrade-*.bak' -print -quit)"
+cmp "$backup" "$work/project-before"
+env "${common_env[@]}" "${project_env[@]}" "$ctl" update --yes stale-project >/dev/null
+[[ "$(find "$(dirname "$config")" -name 'project.env.pre-upgrade-*.bak' | wc -l)" -eq 1 ]]
+mkdir "$workspaces/stale-project/control/.session-lock"
+printf 'pid=%s\n' "$$" > "$workspaces/stale-project/control/.session-lock/owner.txt"
+if env "${common_env[@]}" "${project_env[@]}" "$ctl" update --yes stale-project >"$work/active.out" 2>"$work/active.err"; then exit 1; fi
+grep -q 'while an agent task session is active' "$work/active.err"
+rm -rf "$workspaces/stale-project/control/.session-lock"
+printf 'PASS: an already-current kit upgrades a stale project with backup, idempotence, and active-session protection\n'
 
 git clone -q "$remote" "$publisher"
 git -C "$publisher" config user.name test
@@ -121,6 +142,22 @@ git -C "$publisher" commit -qm manual-source-update
 git -C "$publisher" push -q origin main
 git -C "$source_checkout" fetch -q origin
 git -C "$source_checkout" merge -q --ff-only origin/main
+# Detect a manually advanced source even without a KIT_VERSION bump.
+output="$(env "${common_env[@]}" "$ctl" update --check)"
+[[ "$output" == *'Update available: no'* ]] # README-only changes do not affect the runtime
+printf '\n# manually advanced image input\n' >> "$publisher/config/agent-workspace.md"
+git -C "$publisher" add config/agent-workspace.md
+git -C "$publisher" commit -qm manual-image-change
+git -C "$publisher" push -q origin main
+git -C "$source_checkout" fetch -q origin
+git -C "$source_checkout" merge -q --ff-only origin/main
+output="$(env "${common_env[@]}" "$ctl" update --check)"
+[[ "$output" == *'Update available: yes'* ]]
+: > "$docker_log"
+env "${common_env[@]}" PATH="$fake_bin:/usr/bin:/bin" DOCKER_LOG="$docker_log" \
+  SBX_UPDATE_TEST_NESTED=1 "$ctl" update --yes >"$work/manual-image-update.out"
+[[ "$(grep -c '^build ' "$docker_log")" == 3 ]]
+printf 'PASS: manually advanced same-version image inputs reinstall and rebuild from the installed snapshot\n'
 sed -i 's/^KIT_VERSION=.*/KIT_VERSION=stale-test/' "$xdg_data/agent-sandbox-kit/versions.lock"
 : > "$docker_log"
 env "${common_env[@]}" PATH="$fake_bin:/usr/bin:/bin" DOCKER_LOG="$docker_log" \

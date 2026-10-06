@@ -1,126 +1,122 @@
 # Agent Sandbox Kit
 
-Agent Sandbox Kit runs Codex, OpenCode, and Claude Code in disposable Docker containers from
-WSL. Each agent receives one selected Git working tree without mounts for the
-rest of the WSL home, Windows files, host credentials, or the Docker socket.
+Agent Sandbox Kit runs Codex, OpenCode, and Claude Code from WSL in disposable
+Docker containers. Each task session receives one Git repository, supplied reference
+files, persistent output storage, and a separate project login.
 
-The durable repository and installation name is `agent-sandbox-kit`. This is
-an experimental personal project for repositories you own and review, not a
-general sandbox for untrusted repositories.
+This is an experimental personal project for repositories you own and review.
+Docker provides the boundary; read the [trust model](#trust-model) before use.
 
 ## Quick start
 
-Run these commands in WSL with Docker Desktop running and WSL integration
-enabled. The images support Linux x86_64.
+Run host commands in a Linux x86_64 WSL distribution with Bash, Git,
+Python 3.11 or newer, GNU command-line utilities, and `flock`. Ubuntu normally
+includes the command-line utilities. Docker Desktop must be running with WSL
+integration enabled. Use an account supported by your chosen harness;
+[Claude authentication](docs/CLAUDE.md) has additional limits.
 
-Replace every `<placeholder>` before running a command; the angle brackets
-are documentation notation, not shell syntax.
-
-| Placeholder | Meaning |
-| --- | --- |
-| `<agent>` | `codex`, `opencode`, or `claude`; choose explicitly |
-| `<project>` | A project slug: lowercase letters, numbers, and hyphens, starting with a letter or number; maximum 63 characters |
-| `<repo-url>` | Clone URL of the repository you want the agent to work on |
-| `<kit-directory>` | Path to your local `agent-sandbox-kit` checkout |
-| `<command>` | A shell command and its arguments to run inside the container |
-| `<file-path>` | Path to a reference file you want to import |
-| `<file-name>` | Name of an imported file, as shown by `sbx context <project> list` |
+Clone and install the kit, then build its three pinned images. Each `&&`
+stops the sequence if the preceding command fails:
 
 ```bash
-git clone https://github.com/derek-l8/agent-sandbox-kit.git
-cd agent-sandbox-kit
-./install.sh
+git clone https://github.com/derek-l8/agent-sandbox-kit.git &&
+cd agent-sandbox-kit &&
+./install.sh &&
+export PATH="${XDG_BIN_HOME:-$HOME/.local/bin}:$PATH" &&
 sbx build
-sbx init <project>
-git clone "<repo-url>" "$HOME/agent-workspaces/<project>/repo"
-sbx <agent> doctor <project>
-sbx <agent> login <project>
-sbx <agent> run <project>
 ```
 
-Use the same `<project>` throughout and select the `<agent>` you want to run.
-Each agent has a separate login for that project. Create a trusted baseline
-commit before an agent session; review, commit, and push from WSL, outside the
-container.
-
-The installer copies a self-contained runtime to
+The installer copies the runtime to
 `${XDG_DATA_HOME:-$HOME/.local/share}/agent-sandbox-kit` and links `sbx` from
-`${XDG_BIN_HOME:-$HOME/.local/bin}` without root access. The installed command
-does not depend on the checkout remaining in place. If the command directory
-is not on `PATH`, the installer prints the exact shell setup line to add.
+`${XDG_BIN_HOME:-$HOME/.local/bin}`. The export above sets up this shell. Follow
+the installer's shell-profile instruction if that directory is missing from
+`PATH` in new shells.
 
-Running `./install.sh` again stages and validates a complete new runtime before
-replacing the installed one. If copying, validation, or replacement fails, the
-previous runtime is retained or restored.
+Choose a project name using lowercase letters, numbers, and hyphens, up to
+63 characters, starting with a letter or number. Replace `<repo-url>` with a
+repository you own that already has a reviewed commit. This example starts
+Codex; replace `codex` with
+`opencode` or `claude` to use another harness.
+
+```bash
+project=my-project
+repo_url='<repo-url>'
+sbx init "$project" &&
+git clone "$repo_url" "${CODEX_SANDBOX_WORKSPACES_ROOT:-$HOME/agent-workspaces}/$project/repo" &&
+sbx codex doctor "$project" &&
+sbx codex login "$project" &&
+sbx codex run "$project"
+```
+
+`init` creates the project folders, `doctor` checks the layout and image pins,
+and `login` starts the chosen harness's authentication flow. Each harness has
+its own login for the project. For a fresh repository, create a reviewed
+baseline commit on the host before starting an agent. Linked Git worktrees
+are not supported.
+
+## Everyday use
+
+Use the same project name and harness you selected during setup:
+
+```bash
+sbx codex run my-project
+```
+
+For a diagnostic shell, use `sbx codex shell my-project`. To run a specific
+command, use `sbx codex exec my-project -- npm test`. Review and promote Git
+changes from WSL, outside the container. Exit the current session before
+starting another harness on the same project.
+
+See the [Operator Guide](docs/OPERATOR-GUIDE.md) for authentication maintenance,
+resource settings, and troubleshooting. `sbx --help` lists the command syntax;
+`sbx version` shows the active runtime, CLI versions, and image selections.
 
 ## Updates
 
-Before an agent `run`, `sbx` makes at most one bounded remote check every 24
-hours and prints a notice when the tracked kit checkout has an update. It does
-not pull, install, rebuild, or change a project automatically. Disable this
-check with `SBX_DISABLE_UPDATE_CHECK=1`.
+Before `run`, the host checks the kit's tracked Git remote and each harness's
+published CLI release when its last check is at least 24 hours old. Notices
+allow the selected CLI to run and leave versions unchanged. Checks run
+concurrently with up to 15 seconds of network waiting; failed automatic checks
+stay silent and are cached for 24 hours. Explicit checks always retry.
+See [automatic-check controls](docs/OPERATOR-GUIDE.md#automatic-checks) to disable them.
 
-Check or install a tracked fast-forward update from the host:
+To update Codex and continue on one project:
 
 ```bash
-sbx update --check
-sbx update <project>
-sbx <agent> doctor <project>
+sbx codex-update --check &&
+sbx codex-update my-project &&
+sbx codex doctor my-project &&
+sbx codex run my-project
 ```
 
-`sbx update` requires the recorded source checkout to be clean, on a branch
-with an upstream, and fast-forwardable. It shows the source, exact commits,
-change summary, and a command for reviewing the full diff. Confirming runs the
-fetched checkout's tests and installer with your WSL user permissions. The
-command then fast-forwards the source, runs the Docker-free suite, installs the
-validated runtime, rebuilds images only when their inputs changed, and
-optionally upgrades the named project's image references. Use the printed diff
-command before `--yes` in a non-interactive workflow.
+Use `sbx opencode-update` or `sbx claude-update` for the other harnesses.
+Each update proposes an exact release, asks for confirmation, and builds and
+verifies its image before selecting it. Only that harness's image reference
+in the named project changes. A failed build preserves the previous selection
+and project. Model access follows your account and the service's availability.
 
-The installer records the source checkout but copies a self-contained
-runtime. If that checkout is moved or deleted, the existing runtime still
-works; clone the kit again and run `./install.sh` to reconnect updates.
+To update the kit itself, use `sbx update --check`, then `sbx update my-project`.
+This requires a clean kit checkout on a tracked branch. Review the printed
+commits and diff before confirming. The command fast-forwards the source,
+tests and installs the runtime, rebuilds changed image inputs, and applies
+the selected images to the named project.
 
-## Everyday commands
-
-| Purpose | Command (`<agent>` = `codex`, `opencode`, or `claude`) |
+| Command | Effect |
 | --- | --- |
-| Check for kit update | `sbx update --check` |
-| Install kit update | `sbx update <project>` |
-| Start agent | `sbx <agent> run <project>` |
-| Log in | `sbx <agent> login <project>` |
-| Check login | `sbx <agent> auth-status <project>` |
-| Log out | `sbx <agent> logout <project>` |
-| Validate | `sbx <agent> doctor <project>` |
-| Diagnostic shell | `sbx <agent> shell <project>` |
-| Run a command | `sbx <agent> exec <project> -- <command>` |
+| `sbx <agent>-update my-project` | Discovers and builds a CLI release; switches that harness in the project. |
+| `sbx update my-project` | Updates kit source, runtime, and changed images; switches all project image references. |
+| `sbx build` | Rebuilds the selected images. |
+| `sbx upgrade my-project` | Switches all project references to the current selections without building or downloading. |
 
-Shared setup commands are `sbx init <project>`, `sbx update`, and `sbx build`.
+Here `<agent>` means `codex`, `opencode`, or `claude`. If startup reports a stale
+project image, use the printed recovery command. New-release notices alone
+do not require `upgrade`. The [update guide](docs/OPERATOR-GUIDE.md#installation-and-updates)
+covers failed updates, saved selections, and reinstalling from a moved checkout.
 
-The CLI uses an explicit allowlisted adapter registry. Agent-specific image,
-executable, version, authentication, configuration-validation, and command
-routing metadata is kept under `adapters/`. Docker isolation, verified mounts,
-resource limits, project locking, cleanup, and protected paths remain in the
-common launcher and cannot be configured by an adapter. See
-[Adding an Agent](docs/ADDING-AN-AGENT.md).
+## Project files and context
 
-## Trust model
-
-The trusted WSL launcher creates containers directly and checks their final
-configuration before startup. The repository is writable while `.git` is
-read-only. Agents have separate pinned images and authentication volumes, and
-a shared project lock prevents concurrent sessions on one tree. Authentication
-is mounted read-only during task, shell, and exec sessions.
-
-The kit does not guarantee protection from Docker or kernel vulnerabilities,
-safe handling of arbitrary malicious repositories, protection of an active
-agent credential from repository code, or preservation of the writable tree.
-See the [operator guide](docs/OPERATOR-GUIDE.md) and
-[security reference](docs/MAINTAINER-SECURITY.md).
-
-## Files outside Git
-
-Each project lives entirely in WSL under `~/agent-workspaces/<project>`:
+Projects default to `$HOME/agent-workspaces/<project>` in WSL. Set
+`CODEX_SANDBOX_WORKSPACES_ROOT` to another WSL location before initializing a project.
 
 | Host folder | Container path | Agent access |
 | --- | --- | --- |
@@ -129,57 +125,53 @@ Each project lives entirely in WSL under `~/agent-workspaces/<project>`:
 | `data/` | `/data` | Writable, persistent outputs and state |
 | `control/` | Not mounted | Host configuration and reports |
 
-In Windows Explorer, select files and use **Copy as path**. In WSL run:
+To supply reference files, select them in Windows Explorer, use **Copy as path**,
+then run this in WSL:
 
 ```bash
-sbx context <project>
+sbx context my-project
 ```
 
-Paste the quoted paths, one per line, then enter a blank line. The command
-copies the files into WSL and prints their `/context/...` paths. Windows
-originals are untouched; no Windows folder is mounted into the container.
+Paste the quoted paths, one per line, and finish with a blank line. The command
+copies the files into WSL and prints their `/context/...` paths. Originals stay
+unchanged. Use `sbx context my-project list` to see the copies. See
+[context management](docs/OPERATOR-GUIDE.md#external-context-and-data) for importing
+WSL files, replacement, and deletion.
 
-You can also import WSL paths and manage copies explicitly:
+`context/` and `data/` are outside the repository, so `git add .` in `repo/`
+does not stage them. The agent can read and upload their contents or copy them
+into the repository. Back up important `/data` state separately from Git.
 
-```bash
-sbx context <project> add "<file-path>"
-sbx context <project> list
-sbx context <project> remove "<file-name>"
-```
+## Trust model
 
-To import multiple files, supply each path as a separate quoted argument.
-Replacement requires confirmation. Removal deletes only the named imported
-copy. Imports and removals refuse to run while a project task is active.
-All agents receive guidance about `/context` and `/data`; document parsing
-and viewing depend on the harness's available tools.
+The host verifies container mounts and security settings before startup.
+Sessions run as a non-root user with a read-only root filesystem, dropped
+Linux capabilities, resource limits, and a shared project lock. Task, shell,
+and exec sessions mount the harness's saved authentication read-only.
 
-Neither folder is in the Git working tree: `git add .` in `repo/` cannot stage
-them. An agent can still copy content into the repository. These files are
-accessible to a networked agent; outside Git does not mean isolated from the
-network. Back up important `/data` state separately from Git.
-
-The workspace root defaults to `$HOME/agent-workspaces`; set
-`CODEX_SANDBOX_WORKSPACES_ROOT` to another WSL location. Linked Git worktrees
-are not supported.
+Containers receive no Windows drive, general WSL home, host credentials, or
+Docker socket. The running agent can read its own login and supplied files,
+and has internet access. The kit does not guarantee protection from Docker or
+kernel vulnerabilities or preservation of writable repository and `/data` contents.
+See the [security reference](docs/MAINTAINER-SECURITY.md) and [security policy](SECURITY.md).
 
 ## Included tools
 
-All three Linux x86_64 images provide Python **3.14.7** as `python` and
-`python3`, pinned `uv`, pip compatibility, Node.js/npm, Git, Bash, coreutils,
-find/diff/patch, ripgrep (`rg`), `fd`, curl/CA certificates, jq, file,
-tar/gzip/zip/unzip, C/C++ build tools, pkg-config, and Poppler PDF utilities.
-Tools are installed during image construction; runtime privileges and mounts
-are unchanged. See [Python and shared tools](docs/TOOLCHAIN.md).
+All three images include Python **3.14.7**, pinned `uv`, Node.js/npm, Git,
+Bash, search and archive utilities, C/C++ build tools, and Poppler PDF tools.
+Project libraries are installed separately. See [Python and shared tools](docs/TOOLCHAIN.md)
+for virtual environments, alternate Python versions, and persistent storage.
 
 ## Tests
 
-Complete Docker-free, authentication-free, and model-free suite:
+From the kit checkout in WSL, run the complete Docker-free suite:
 
 ```bash
 bash tests/static.sh
 ```
 
-Docker-based, model-free smoke checks:
+After building the pinned images, these smoke checks use disposable projects
+and require no real credentials or model requests:
 
 ```bash
 bash tests/smoke-codex.sh
@@ -187,6 +179,8 @@ bash tests/smoke-opencode.sh
 bash tests/smoke-claude.sh
 bash tests/smoke-toolchain.sh
 ```
+
+For adapter implementation details, see [Adding an Agent](docs/ADDING-AN-AGENT.md).
 
 ## License
 
