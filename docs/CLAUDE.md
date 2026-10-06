@@ -1,27 +1,28 @@
 # Claude Code adapter
 
-The adapter pins Claude Code 2.1.280 and its Linux x64 npm binary. It uses the
+The baseline Claude Code version is recorded in [versions.lock](../versions.lock).
+An independent host update can select a newer exact release; `sbx version`
+shows the effective version. Claude uses the
 same Docker boundary as Codex and OpenCode: non-root, read-only root filesystem,
 no capabilities, no-new-privileges, no published ports or host sockets, and the
 existing CPU, memory, and process limits. Network access is enabled.
 
-## Install or update
+## First use
 
-Run these commands in WSL from the kit checkout:
+Install and build the kit, then initialize and clone your project using the
+[README quick start](../README.md#quick-start). For an existing project, run
+these commands in WSL, replacing `my-project` with its registered name:
 
 ```bash
-./install.sh
-sbx build
-sbx upgrade my-project
-sbx claude doctor my-project
-sbx claude login my-project
-sbx claude auth-status my-project
+sbx claude doctor my-project &&
+sbx claude login my-project &&
+sbx claude auth-status my-project &&
 sbx claude run my-project
 ```
 
-Replace `my-project` with the existing project slug. `upgrade` preserves its
-repository, context, data, resource settings, and other agents' credentials.
-For a new project, use `sbx init` and clone a repository into its `repo` folder.
+If `doctor` reports stale image references, follow the recovery command it
+prints before logging in. The [update guide](OPERATOR-GUIDE.md#installation-and-updates)
+explains rebuilding and applying selected images.
 
 Login runs without mounting the repository, `/context`, or `/data`. Follow the
 URL and code prompts in Claude's terminal using your Windows browser. No ports
@@ -29,11 +30,25 @@ are published for a browser callback. Use a Claude subscription account; API
 keys, Console billing, third-party providers, and host credential import are
 outside this adapter's tested scope.
 
+## Update Claude
+
+```bash
+sbx claude-update --check &&
+sbx claude-update my-project &&
+sbx claude doctor my-project
+```
+
+The command proposes an exact stable release from npm's `latest` tag, builds
+and verifies its image after confirmation, then changes only Claude's image
+reference in the named project. It preserves project files and saved logins.
+This can select a newer version than Anthropic's delayed `stable` channel.
+Use `sbx update my-project` for kit updates.
+
 ## Storage and commands
 
 `run`, `shell`, and `exec` mount `/workspace` writable, its `.git` read-only,
 `/context` read-only, and `/data` writable. They share the kit's per-project
-session lock with the other agents. Claude authentication commands also take
+session lock with the other agents. Claude login, logout, and status commands also take
 that lock to avoid concurrent credential changes.
 
 The separate `codex-sbx-<slug>-claude-auth-v2` Docker volume persists only
@@ -48,20 +63,15 @@ organization fields can therefore be absent from `auth-status`.
 
 Task-time token refresh is **not saved** to the persistent volume. If a later
 session reports an expired or invalid login, run `sbx claude login my-project`
-again. Real subscription login and refresh across multiple sessions require a
-manual acceptance test; synthetic credential recognition does not prove them.
+again.
 
-```bash
-sbx claude shell my-project
-sbx claude exec my-project -- python3 --version
-sbx claude auth-status my-project
-sbx claude logout my-project
-sbx claude reset-auth my-project --yes
-```
-
-`auth-status` uses a read-only credential mount and returns nonzero when logged
-out. `logout` removes the saved login. `reset-auth` deletes only this project's
-Claude volume and is for deliberate credential reset.
+| Command | Purpose |
+| --- | --- |
+| `sbx claude shell my-project` | Open a diagnostic shell. |
+| `sbx claude exec my-project -- python3 --version` | Run one command. |
+| `sbx claude auth-status my-project` | Check the login using a read-only credential mount; returns nonzero when logged out. |
+| `sbx claude logout my-project` | Remove the saved login. |
+| `sbx claude reset-auth my-project --yes` | Delete only this project's Claude volume for a deliberate reset. |
 
 ## Configuration policy
 
@@ -78,8 +88,9 @@ boundary, not Claude permission prompts. This does not prevent network
 exfiltration or protect files writable inside `/workspace` and `/data`. The
 agent can read its own credential. Use repositories and context you trust to
 the selected account. No host authentication, MCP servers, or plugins are
-imported. In-container automatic updates are disabled; use host `sbx update`
-to install tracked kit updates.
+imported. In-container automatic updates are disabled; use host
+`sbx claude-update my-project` for Claude releases and `sbx update my-project`
+for kit updates.
 
 ## Validation
 
@@ -94,18 +105,22 @@ of repository hook/MCP commands. It uses synthetic credential placeholders to
 check file recognition and task-copy isolation. It does not supply real credentials or complete a
 model request. The Codex and OpenCode smoke tests cover regressions separately.
 
+Subscription login and token refresh across multiple sessions require manual
+acceptance with a real account.
+
 For manual acceptance, log in, confirm `auth-status`, and ask Claude to read a
 file from `/context`, write a small result to `/data`, and run the repository's
 tests. Exit and start another session to check login reuse. Review the Git diff
 outside Docker. Finally test logout/status and sign back in if desired.
 
-Upstream references used for this pin:
+Upstream references for the baseline pin:
 
 - [Authentication and credential storage](https://code.claude.com/docs/en/authentication)
 - [CLI flags](https://code.claude.com/docs/en/cli-reference)
 - [Managed configuration](https://code.claude.com/docs/en/settings-reference)
 - [Environment variables](https://code.claude.com/docs/en/env-vars)
 
-Package and binary integrity values were obtained from the official npm
-registry metadata on 2026-09-22. The Docker build checks both exact-version
-values before installation; `doctor` verifies the image's recorded pins.
+Baseline package and binary integrity values were obtained from the official
+npm registry metadata on 2026-09-22. The Docker build verifies downloaded
+archives against the selected hashes before installation; `doctor` verifies
+the image's recorded pins.

@@ -14,13 +14,13 @@ printf 'image\n' > "$work/source/image.png"
 # stubbed here; the actual wslpath integration is checked on WSL separately.
 cat > "$work/bin/wslpath" <<'STUB'
 #!/usr/bin/env bash
-[[ "$1" == -u && "$2" == 'C:\Users\Derek\Plan with spaces.pdf' ]] || exit 1
+[[ "$1" == -u && "$2" == 'C:\Users\Example\Plan with spaces.pdf' ]] || exit 1
 printf '%s/source/Plan with spaces.pdf' "$CONTEXT_TEST_ROOT"
 STUB
 chmod +x "$work/bin/wslpath"
 export CONTEXT_TEST_ROOT="$work"
 export PATH="$work/bin:$PATH"
-printf '%s\r\n"%s/source/image.png"\r\n\r\n' '"C:\Users\Derek\Plan with spaces.pdf"' "$work" \
+printf '%s\r\n"%s/source/image.png"\r\n\r\n' '"C:\Users\Example\Plan with spaces.pdf"' "$work" \
   | "$sbx" context probe > "$work/result"
 grep -qx 'Imported: /context/Plan with spaces.pdf' "$work/result"
 cmp "$work/source/Plan with spaces.pdf" "$project/context/Plan with spaces.pdf"

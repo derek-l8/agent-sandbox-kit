@@ -39,6 +39,13 @@ read_versions() {
     "${NETWORK_IMAGE:?}" \
     "${OPENCODE_IMAGE:?}" "${OPENCODE_VERSION:?}" \
     "${CLAUDE_IMAGE:?}" "${CLAUDE_VERSION:?}" "${CLAUDE_PACKAGE_INTEGRITY:?}" "${CLAUDE_LINUX_X64_INTEGRITY:?}"
+  source "$KIT_ROOT/bin/harness-update.sh"
+  local harness release_file
+  for harness in codex opencode claude; do
+    release_file="$KIT_ROOT/${harness}-release.lock"
+    [[ ! -L "$release_file" ]] || die 'harness release lock may not be a symbolic link'
+    [[ ! -e "$release_file" ]] || load_harness_release "$harness" "$release_file"
+  done
 }
 
 project_root() {
@@ -759,6 +766,9 @@ cmd_version() {
     "$KIT_VERSION" "$KIT_ROOT" "$runtime_kind" "$launcher" "$VERSIONS_FILE" "$WORKSPACES_ROOT" \
     "$NETWORK_IMAGE" "$OPENCODE_IMAGE" "$CLAUDE_IMAGE"
   printf 'Default Python: %s\nuv: %s\n' "$PYTHON_VERSION" "$UV_VERSION"
+  printf 'Selected Codex CLI: %s\nCodex selection file: %s\n' "$CODEX_VERSION" "$KIT_ROOT/codex-release.lock"
+  printf 'Selected OpenCode CLI: %s\nOpenCode selection file: %s\n' "$OPENCODE_VERSION" "$KIT_ROOT/opencode-release.lock"
+  printf 'Selected Claude Code CLI: %s\nClaude Code selection file: %s\n' "$CLAUDE_VERSION" "$KIT_ROOT/claude-release.lock"
   if [[ "$runtime_kind" == source ]]; then
     printf 'Installed runtime root: %s\nInstalled kit version: %s\n' "$installed_root" "$installed_version"
     if [[ "$installed_version" != missing && "$installed_version" != "$KIT_VERSION" ]]; then
@@ -817,10 +827,6 @@ remote_update_sha() {
   printf '%s' "$sha"
 }
 
-source_kit_version() {
-  sed -n 's/^KIT_VERSION=//p' "$1/versions.lock" | head -n1
-}
-
 update_cache_file() {
   printf '%s/agent-sandbox-kit/update-check' "${XDG_CACHE_HOME:-${HOME}/.cache}"
 }
@@ -844,11 +850,17 @@ record_update_check() {
   mv -f -- "$temporary" "$cache" || true
 }
 
-automatic_update_check() {
+automatic_update_check() (
   automatic_update_check_due || return 0
-  local source local_sha tracked_sha remote_sha
+  local source local_sha tracked_sha remote_sha cache
   source="$(update_source_checkout)" || return 0
   load_update_tracking "$source" || return 0
+  cache="$(update_cache_file)"
+  mkdir -p -- "$(dirname "$cache")" 2>/dev/null || return 0
+  command -v flock >/dev/null || return 0
+  { exec 8>"${cache}.lock"; } 2>/dev/null || return 0
+  flock -n 8 || return 0
+  automatic_update_check_due || return 0
   local_sha="$(git -C "$source" rev-parse HEAD 2>/dev/null)" || return 0
   tracked_sha="$(git -C "$source" rev-parse "$UPDATE_UPSTREAM" 2>/dev/null)" || return 0
   remote_sha="$(remote_update_sha "$source")" || {
@@ -858,7 +870,7 @@ automatic_update_check() {
   record_update_check
   [[ "$local_sha" == "$tracked_sha" && "$remote_sha" != "$local_sha" ]] || return 0
   printf 'UPDATE AVAILABLE: the tracked Agent Sandbox Kit source has remote changes.\nRun: sbx update --check\nThen: sbx update [<project>]\n' >&2
-}
+)
 
 cmd_update() {
   local check=false assume_yes=false auto=false project='' source local_sha remote_sha
@@ -885,7 +897,12 @@ cmd_update() {
   if [[ "$auto" == true ]]; then
     [[ "$check" == false && "$assume_yes" == false && -z "$project" ]] \
       || die 'usage: sbx update --auto-check'
-    automatic_update_check
+    automatic_update_check &
+    local harness
+    for harness in codex opencode claude; do
+      automatic_harness_update_check "$harness" &
+    done
+    wait
     return
   fi
 
@@ -910,7 +927,7 @@ cmd_update() {
     "$UPDATE_REMOTE_URL" "$local_sha" "$remote_sha"
 
   if [[ "$check" == true ]]; then
-    if [[ "$local_sha" == "$remote_sha" && "$(source_kit_version "$source")" == "$KIT_VERSION" ]]; then
+    if [[ "$local_sha" == "$remote_sha" ]] && runtime_matches_source "$source"; then
       note 'Update available: no'
     else
       note 'Update available: yes'
@@ -920,13 +937,20 @@ cmd_update() {
     return
   fi
 
+  acquire_runtime_update_lock "$KIT_ROOT"
+  read_versions
+  local_sha="$(git -C "$source" rev-parse HEAD)"
   [[ -z "$(git -C "$source" status --porcelain)" ]] \
     || die "source checkout has local changes; review or preserve them before updating: $source"
 
   git -C "$source" fetch --prune "$UPDATE_REMOTE"
   remote_sha="$(git -C "$source" rev-parse "$UPDATE_UPSTREAM")"
-  if [[ "$local_sha" == "$remote_sha" && "$(source_kit_version "$source")" == "$KIT_VERSION" ]]; then
-    note 'Agent Sandbox Kit is already current; no changes made.'
+  if [[ "$local_sha" == "$remote_sha" ]] && runtime_matches_source "$source"; then
+    note 'Agent Sandbox Kit is already current.'
+    if [[ -n "$project" ]]; then
+      cmd_upgrade "$project"
+    fi
+    record_update_check
     return
   fi
   git -C "$source" merge-base --is-ancestor "$local_sha" "$remote_sha" \
@@ -937,7 +961,7 @@ cmd_update() {
   git -C "$source" diff --stat "$local_sha..$remote_sha"
   printf 'Review command:\n  git -C %q diff %q\n' "$source" "$local_sha..$remote_sha"
   printf "Confirming runs the fetched checkout's tests and installer with your WSL user permissions.\n"
-  if [[ "$(source_kit_version "$source")" != "$KIT_VERSION" ]] \
+  if ! runtime_image_inputs_match "$source" \
       || ! git -C "$source" diff --quiet "$local_sha" "$remote_sha" -- \
     versions.lock images config container; then
     image_inputs_changed=true
@@ -972,6 +996,22 @@ cmd_update() {
   record_update_check
 }
 
+# Compare the installed snapshot too: the source may have been advanced manually
+# or a previous update may have failed before installation, without a version bump.
+runtime_matches_source() {
+  local source="$1" item
+  for item in bin adapters versions.lock images config container; do
+    diff -qr -- "$KIT_ROOT/$item" "$source/$item" >/dev/null || return 1
+  done
+}
+
+runtime_image_inputs_match() {
+  local source="$1" item
+  for item in versions.lock images config container; do
+    diff -qr -- "$KIT_ROOT/$item" "$source/$item" >/dev/null || return 1
+  done
+}
+
 session_is_active() {
   local lock_dir owner pid
   lock_dir="$(session_lock_dir)"
@@ -1002,6 +1042,12 @@ validate_upgraded_project() {
 }
 
 cmd_upgrade() {
+  upgrade_project_config all "$@"
+}
+
+upgrade_project_config() (
+  local agent="$1"
+  shift
   local dry_run=false slug
   if [[ "${1:-}" == --dry-run ]]; then dry_run=true; shift; fi
   slug="${1:-}"
@@ -1011,13 +1057,29 @@ cmd_upgrade() {
   if session_is_active; then
     die "cannot upgrade project '$slug' while an agent task session is active"
   fi
+  if [[ "$dry_run" != true ]]; then
+    acquire_session_lock upgrade
+    # Reload under the session lock before preserving project settings or pins.
+    load_project "$slug"
+    ensure_project_layout
+  fi
+  case "$agent" in
+    all) ;;
+    codex) OPENCODE_IMAGE="$PROJECT_OPENCODE_IMAGE"; CLAUDE_IMAGE="$PROJECT_CLAUDE_IMAGE" ;;
+    opencode) NETWORK_IMAGE="$PROJECT_NETWORK_IMAGE"; CLAUDE_IMAGE="$PROJECT_CLAUDE_IMAGE" ;;
+    claude) NETWORK_IMAGE="$PROJECT_NETWORK_IMAGE"; OPENCODE_IMAGE="$PROJECT_OPENCODE_IMAGE" ;;
+    *) die "unknown harness: $agent" ;;
+  esac
   printf 'Project: %s\nCurrent images:\n  Codex networked: %s\n  OpenCode: %s\n  Claude Code: %s\nProposed images:\n  Codex networked: %s\n  OpenCode: %s\n  Claude Code: %s\n' \
     "$slug" "$PROJECT_NETWORK_IMAGE" "$PROJECT_OPENCODE_IMAGE" "$PROJECT_CLAUDE_IMAGE" \
     "$NETWORK_IMAGE" "$OPENCODE_IMAGE" "$CLAUDE_IMAGE"
   if ! project_images_are_stale; then
     note 'Project configuration is already current; no changes made.'
-    note "Next: sbx codex doctor $slug"
-    note "Or:   sbx opencode doctor $slug"
+    if [[ "$agent" == all ]]; then
+      note "Next: sbx <agent> doctor $slug"
+    else
+      note "Next: sbx $agent doctor $slug"
+    fi
     return 0
   fi
   if [[ "$dry_run" == true ]]; then
@@ -1040,10 +1102,14 @@ cmd_upgrade() {
   fi
   note "Updated project configuration atomically. Backup: $backup"
   note 'Configuration upgrade complete; authentication volumes were not changed.'
-  note 'Next: sbx build'
-  note "Then: sbx codex doctor $slug"
-  note "Or:   sbx opencode doctor $slug"
-}
+  if [[ "$agent" == all ]]; then
+    note 'Next: sbx build'
+    note "Then: sbx <agent> doctor $slug"
+  else
+    note "Next: sbx $agent doctor $slug"
+    note "Then: sbx $agent run $slug"
+  fi
+)
 
 cmd_init() {
   local slug="${1:-}"
@@ -1072,7 +1138,7 @@ cmd_init() {
   note "Clone or initialize the Git repository in: $root/repo"
 }
 
-cmd_build() {
+build_codex_image() {
   require_command docker
   note "Building pinned Codex networked image: $NETWORK_IMAGE"
   docker build \
@@ -1085,6 +1151,10 @@ cmd_build() {
     --label "io.codex-sandbox.codex.linux-x64-integrity=$CODEX_LINUX_X64_INTEGRITY" \
     -f "$KIT_ROOT/images/codex-networked.Dockerfile" \
     -t "$NETWORK_IMAGE" "$KIT_ROOT"
+}
+
+build_opencode_image() {
+  require_command docker
   note "Building pinned OpenCode image: $OPENCODE_IMAGE"
   docker build \
     --build-arg "BASE_IMAGE=$BASE_IMAGE" \
@@ -1096,6 +1166,10 @@ cmd_build() {
     --label "io.codex-sandbox.opencode.linux-x64-integrity=$OPENCODE_LINUX_X64_INTEGRITY" \
     -f "$KIT_ROOT/images/opencode.Dockerfile" \
     -t "$OPENCODE_IMAGE" "$KIT_ROOT"
+}
+
+build_claude_image() {
+  require_command docker
   note "Building pinned Claude Code image: $CLAUDE_IMAGE"
   docker build \
     --build-arg "BASE_IMAGE=$BASE_IMAGE" \
@@ -1107,6 +1181,12 @@ cmd_build() {
     --label "io.codex-sandbox.claude.linux-x64-integrity=$CLAUDE_LINUX_X64_INTEGRITY" \
     -f "$KIT_ROOT/images/claude.Dockerfile" \
     -t "$CLAUDE_IMAGE" "$KIT_ROOT"
+}
+
+cmd_build() {
+  build_codex_image
+  build_opencode_image
+  build_claude_image
 }
 
 cmd_doctor() {
@@ -1639,6 +1719,9 @@ main() {
     init) cmd_init "$@" ;;
     version) cmd_version "$@" ;;
     update) cmd_update "$@" ;;
+    codex-update) cmd_harness_update codex "$@" ;;
+    opencode-update) cmd_harness_update opencode "$@" ;;
+    claude-update) cmd_harness_update claude "$@" ;;
     upgrade) cmd_upgrade "$@" ;;
     build) cmd_build "$@" ;;
     context) cmd_context "$@" ;;

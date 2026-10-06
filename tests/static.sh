@@ -33,6 +33,9 @@ run_suite sbx-cli.sh
 run_suite context.sh
 run_suite install.sh
 run_suite update.sh
+run_suite harness-update.sh
+run_suite harness-install.sh
+PYTHONDONTWRITEBYTECODE=1 python3 "$root/tests/harness-release.py" || fail 'harness metadata tests'
 run_suite upgrade.sh
 run_suite auth-labels.sh
 run_suite diagnostics.sh
@@ -69,8 +72,10 @@ assert lock['CLAUDE_VERSION'] == '2.1.280'
 for key in ('CLAUDE_PACKAGE_INTEGRITY', 'CLAUDE_LINUX_X64_INTEGRITY'):
     assert lock[key].startswith('sha512-')
 dockerfile = (root / 'images/claude.Dockerfile').read_text()
-for package in ('@anthropic-ai/claude-code@', '@anthropic-ai/claude-code-linux-x64@'):
-    assert f'npm view "{package}${{CLAUDE_VERSION}}" dist.integrity' in dockerfile
+assert 'COPY container/install-harness.sh /tmp/install-harness.sh' in dockerfile
+assert 'bash /tmp/install-harness.sh claude' in dockerfile
+for key in ('CLAUDE_VERSION', 'CLAUDE_PACKAGE_INTEGRITY', 'CLAUDE_LINUX_X64_INTEGRITY'):
+    assert f'{key}="${{{key}}}"' in dockerfile
 assert 'DISABLE_UPDATES=1' in dockerfile
 assert 'USER node' in dockerfile
 assert '[[ -w /auth ]] || return 0' in (root / 'container/run-with-claude-auth.sh').read_text()
@@ -135,11 +140,12 @@ done
 grep -qF '[[ -w /auth ]] || return 0' "$root/container/run-with-codex-auth.sh" \
   || fail "Codex auth wrapper does not skip synchronization for read-only task mounts"
 
-# The pinned OpenCode image verifies both integrity values before installing.
+# The pinned OpenCode image passes both archive integrity values to the verifier.
 for token in \
-  'npm view "opencode-ai@${OPENCODE_VERSION}" dist.integrity' \
-  'npm view "opencode-linux-x64@${OPENCODE_VERSION}" dist.integrity' \
-  'opencode-ai@${OPENCODE_VERSION}'; do
+  'OPENCODE_VERSION="${OPENCODE_VERSION}"' \
+  'OPENCODE_PACKAGE_INTEGRITY="${OPENCODE_PACKAGE_INTEGRITY}"' \
+  'OPENCODE_LINUX_X64_INTEGRITY="${OPENCODE_LINUX_X64_INTEGRITY}"' \
+  'bash /tmp/install-harness.sh opencode'; do
   grep -qF "$token" "$root/images/opencode.Dockerfile" \
     || fail "opencode.Dockerfile is missing required pin element: $token"
 done

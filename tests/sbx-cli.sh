@@ -66,7 +66,13 @@ assert_output '<init>
 assert_output '<build>' build
 assert_output '<update>
 <--check>' update --check
+assert_output '<opencode-update>
+<--check>' opencode-update --check
+assert_output '<claude-update>
+<--check>' claude-update --check
 printf 'PASS: shared commands translate directly\n'
+assert_output '<codex-update>
+<--check>' codex-update --check
 
 help="$($sbx --help)"
 [[ "$help" == *'Agent Sandbox Kit'* && "$help" == *'sbx <agent> <action> <project>'* ]] \

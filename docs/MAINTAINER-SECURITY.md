@@ -217,10 +217,37 @@ each credential volume's management, project, agent, and supported schema
 identity before use. A mismatch fails closed with an agent-specific reset
 command. Reset is never automatic.
 
-Do not use `latest`, floating base tags without digests, or in-container agent
+Do not install agent packages with `latest`, use floating base tags without digests, or enable in-container agent
 self-updates. The host launcher may check the tracked kit remote and install an
-explicitly confirmed, fast-forward-only kit update; it never chooses or floats
-agent versions. Confirmation permits the fetched checkout's tests and installer
+explicitly confirmed, fast-forward-only kit update. Independently,
+`sbx codex-update`, `sbx opencode-update`, and `sbx claude-update` resolve
+their vendors' npm release metadata to exact wrapper and
+Linux x64 package versions and SHA-512 hashes, build and verify a distinct image,
+and only then activate a private host selection. Metadata is strictly parsed
+as data and both downloaded archives are checked against their pins before
+installation. npm installs the wrapper offline with vendor scripts disabled;
+the verified native package is placed explicitly, so no alternate fallback
+package can be fetched. Metadata redirects and additional regular or peer
+dependencies are rejected. No credential volume or container isolation rule
+is changed by either update path.
+
+Each runtime `<agent>-release.lock` stores that harness's exact version and
+two SHA-512 values. Unknown, duplicate, or missing keys are rejected. Reinstalls
+retain and validate these selections and their `.pre-update-*.bak` backups.
+A newer kit baseline supersedes a lower selection; equal versions with
+conflicting hashes fail closed.
+
+An independently selected release has a distinct image tag containing the
+kit version, CLI version, and a hash of its pins and baked image inputs.
+Changes to those inputs change its tag. Older images remain available.
+To reproduce a selection, keep its release lock, baseline `versions.lock`,
+Dockerfile, configuration, and container build inputs together.
+
+Runtime installation and version updates hold one host lock outside the
+replaceable runtime directory. Project reference changes additionally hold
+the shared session lock. Startup checks use separate per-check cache locks.
+
+Kit update confirmation permits the fetched checkout's tests and installer
 to run with the WSL user's permissions, so inspect the printed source, commits,
 and diff first. Changing pins remains a deliberate maintenance event:
 
