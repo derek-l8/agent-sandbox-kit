@@ -50,7 +50,7 @@ if kind == "platform":
 else:
     mapping = "npm:@openai/codex@" + version + "-linux-x64" if agent == "codex" else version
     require(metadata["optionalDependencies"][dependency] == mapping, "unsupported dependency mapping")
-    require(metadata["bin"][agent] == entry, "unsupported wrapper entrypoint")
+    require(metadata["bin"][agent] in (entry, "./" + entry), "unsupported wrapper entrypoint")
 ' "$package" "$selected" "$kind" "$dependency" "$version" "$agent" "$entry"
 done
 npm install --global --ignore-scripts --omit=optional --offline --no-audit --no-fund "$work/wrapper.tgz"

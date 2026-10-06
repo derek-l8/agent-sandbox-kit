@@ -1,7 +1,8 @@
 # Operator Guide
 
-Use this guide for an installed kit in WSL. Examples use `my-project` and
-Codex; substitute your project name and `opencode` or `claude` as needed.
+Use this guide for an installed kit in WSL. Replace `my-project` throughout
+the examples with your project name, including in folder paths. Examples use
+Codex; substitute `opencode` or `claude` as needed.
 Keep the kit checkout and Git review outside agent containers.
 
 ## Installation and updates
@@ -43,10 +44,10 @@ discovery for that invocation.
 
 ### Update one harness
 
+Exit the current agent session before updating its project.
+
 ```bash
-sbx codex-update --check &&
 sbx codex-update my-project &&
-sbx codex doctor my-project &&
 sbx codex run my-project
 ```
 
@@ -58,7 +59,8 @@ up; repository files, resource settings, and logins are preserved. Applying
 an already-selected release verifies its image and updates the project without
 rebuilding.
 
-Use `--version X.Y.Z` to request an exact stable release or `--yes` to skip
+Use `sbx codex-update --check` for an optional preview without applying an
+update. Use `--version X.Y.Z` to request an exact stable release or `--yes` to skip
 confirmation. Downgrades are refused. Discovery uses each vendor's npm `latest`
 tag and accepts only non-prerelease versions. Claude uses npm's latest release,
 which can differ from Anthropic's delayed `stable` channel.
@@ -70,13 +72,15 @@ harness images.
 
 ### Update the kit
 
+Exit the current agent session before updating its project.
+
 ```bash
-sbx update --check &&
 sbx update my-project &&
-sbx codex doctor my-project
+sbx codex run my-project
 ```
 
-The kit checkout must be clean, on a branch with an upstream, and able to
+Use `sbx update --check` for an optional preview. The kit checkout must be
+clean, on a branch with an upstream, and able to
 fast-forward. Review or preserve local kit edits before updating. The project
 repository is a separate directory and its files are not rewritten by this command.
 
@@ -87,9 +91,8 @@ runs the Docker-free suite, installs the runtime, rebuilds changed image inputs,
 and switches all image references in the named project. `--yes` skips confirmation.
 
 An already-current kit still applies stale references in a named project.
-The updater compares installed files with the source, so manually pulling
-runtime or image-input changes is detected even without a kit version bump.
-README-only changes need no runtime replacement.
+If you pulled the kit manually, run `sbx update my-project` to install any
+runtime or image changes and apply the selected images to your project.
 
 ### Rebuild and apply saved selections
 
@@ -115,8 +118,14 @@ same harness update. Concurrent installers and version updates are refused.
 
 A kit update advances the source before testing it. If tests fail, the source
 remains at the fetched commit for inspection while the installed runtime and
-project stay unchanged. If an image build fails after installation, run
-`sbx build`, then `sbx upgrade my-project` once the build succeeds.
+project stay unchanged. Updates that require image builds check Docker before
+advancing the source or installing the runtime.
+
+If an image build fails after installation, resolve the build error and rerun
+`sbx update my-project`. It remembers unfinished builds, rebuilds the selected
+images, and then applies the project references. If the builds succeeded but
+an active session prevented the project upgrade, exit that session and rerun
+the same update command; it applies the references without rebuilding.
 
 If the recorded checkout is moved or deleted, existing agent commands still
 use the copied runtime. Clone the kit and run `./install.sh` again to restore
@@ -124,14 +133,14 @@ the source update path.
 
 ## Project setup and daily use
 
-Replace `<repo-url>` with your own committed repository. For OpenCode or Claude
-Code, replace `codex` with `opencode` or `claude`.
+Replace `<repo-url>` with the Git clone URL of your own committed repository;
+keep the quotes. For OpenCode or Claude Code, replace `codex` with `opencode`
+or `claude`.
 
 ```bash
 sbx init my-project &&
 git clone '<repo-url>' \
   "${CODEX_SANDBOX_WORKSPACES_ROOT:-$HOME/agent-workspaces}/my-project/repo" &&
-sbx codex doctor my-project &&
 sbx codex login my-project &&
 sbx codex run my-project
 ```
@@ -150,11 +159,11 @@ WSL home, SSH material, Docker socket, browser sessions, or editor sockets.
 
 ## External context and data
 
-Run `sbx context <project>` and paste Windows **Copy as path** values, one
+Run `sbx context my-project` and paste Windows **Copy as path** values, one
 quoted path per line; finish with a blank line. It translates paths with
 `wslpath`, copies regular files to the project's WSL `context/` directory,
 and prints the container paths. You can import before cloning the repository.
-For arguments, use `sbx context <project> add '/wsl/path/file.pdf'`.
+For arguments, use `sbx context my-project add '/wsl/path/file.pdf'`.
 Use single shell quotes around Windows paths passed as arguments; the
 interactive prompt accepts Explorer's double quotes literally.
 
@@ -163,8 +172,8 @@ that copy. Multiple files are processed in order; a failed import stops the
 batch, preserving earlier successful imports. Directories and symlinks are
 not imported. Files are copied unchanged, without format detection or parsing.
 
-`sbx context <project> list` prints imported files. To delete only a WSL copy,
-use `sbx context <project> remove 'filename.pdf'`. Source files are untouched.
+`sbx context my-project list` prints imported files. To delete only a WSL copy,
+use `sbx context my-project remove 'filename.pdf'`. Source files are untouched.
 Imports/removals share the agent session lock; exit the task before changing
 its context. Put generated files and ongoing state in `/data`, which persists
 across disposable containers. Both directories are outside `repo/` and Git.
@@ -191,17 +200,23 @@ closed on errors. Review and promote Git changes from the host.
 
 ## Settings and troubleshooting
 
-`$HOME/agent-workspaces/<project>/control/project.env` contains fixed keys
+`$HOME/agent-workspaces/my-project/control/project.env` contains fixed keys
 parsed as data, not sourced as shell. Defaults are 6 CPUs and 8 GiB. Compatible
 custom images must retain all labels, tools, and entrypoints verified by the
 launcher. `control/protected-paths.txt` can make existing repository-relative
 paths read-only.
 
+For diagnostics without starting an agent, optionally run:
+
 ```bash
 sbx codex doctor my-project
 ```
 
-Replace `codex` with your harness. The default workspace root can be changed
+It checks Docker availability, project layout, image labels, and protected
+mount paths. `run` checks the required conditions before launching too;
+`doctor` is useful for troubleshooting and does not test authentication or
+make a model request. Replace `codex` with your harness.
+The default workspace root can be changed
 with `CODEX_SANDBOX_WORKSPACES_ROOT`; use that root for the control-file path too.
 
 Do not bypass a failed boundary check. Inspect the layout, control file, pinned
@@ -211,11 +226,11 @@ images, and host reports under `control/logs`.
 |---|---|
 | Source/installed versions differ | Run `./install.sh` from the intended checkout, then `sbx version`. |
 | Image missing | Run `sbx build`. |
-| Project uses an old image tag | Run `sbx upgrade <project>`. Do not edit `project.env` manually. |
+| Project uses an old image tag | Run `sbx upgrade my-project`. Do not edit `project.env` manually. |
 | Image label differs | Run `sbx build`; never relabel an unverified image. |
-| Authentication schema incompatible | Run the exact `sbx <agent> reset-auth <project> --yes` printed by the error, then login. Only that agent/project login is deleted; repository and other agent login remain. |
+| Authentication schema incompatible | Run the exact agent-specific `reset-auth` command printed by the error, then login. Only that agent/project login is deleted; repository and other agent login remain. |
 | Docker daemon unavailable | Start Docker Desktop and its WSL integration, then retry. |
-| Smoke test stale state | Reinstall/update: current smoke tests always create unique temporary roots and cannot reuse normal projects. |
+| Image build failed during a kit update | Resolve the build error, then rerun `sbx update my-project` to finish the builds and project upgrade. |
 | OpenTUI executable-temp failure | Reinstall the current kit, rebuild, and run `bash tests/smoke-opencode.sh`; keep general `/tmp` non-executable. |
 
 ### Codex and the Bubblewrap warning
@@ -234,12 +249,12 @@ and Bubblewrap should not be added to the image as a duplicate security layer.
 Run these from the reviewed host checkout, never from an agent container:
 
 ```bash
-bash tests/static.sh
-bash tests/smoke-codex.sh
-bash tests/smoke-opencode.sh
-bash tests/smoke-claude.sh
+bash tests/static.sh &&
+bash tests/smoke-codex.sh &&
+bash tests/smoke-opencode.sh &&
+bash tests/smoke-claude.sh &&
 bash tests/smoke-toolchain.sh
 ```
 
-The smoke tests are Docker-based and model-free. Run them only after the
-pinned images have been built; neither performs authentication.
+Run the smoke tests only after the pinned images have been built. They use
+Docker and disposable projects, requiring no real credentials or model requests.

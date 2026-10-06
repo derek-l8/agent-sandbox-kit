@@ -15,10 +15,11 @@ includes the command-line utilities. Docker Desktop must be running with WSL
 integration enabled. Use an account supported by your chosen harness;
 [Claude authentication](docs/CLAUDE.md) has additional limits.
 
-Clone and install the kit, then build its three pinned images. Each `&&`
-stops the sequence if the preceding command fails:
+From your WSL home directory, clone and install the kit, then build its three
+pinned images. Each `&&` stops the sequence if the preceding command fails:
 
 ```bash
+cd "$HOME" &&
 git clone https://github.com/derek-l8/agent-sandbox-kit.git &&
 cd agent-sandbox-kit &&
 ./install.sh &&
@@ -33,30 +34,32 @@ the installer's shell-profile instruction if that directory is missing from
 `PATH` in new shells.
 
 Choose a project name using lowercase letters, numbers, and hyphens, up to
-63 characters, starting with a letter or number. Replace `<repo-url>` with a
-repository you own that already has a reviewed commit. This example starts
-Codex; replace `codex` with
-`opencode` or `claude` to use another harness.
+63 characters, starting with a letter or number. The examples use `my-project`;
+replace it everywhere with your chosen name, including in folder paths.
+Replace `<repo-url>` with the Git clone URL of a repository you own that
+already has a reviewed commit. Keep the quotes around the URL. This example
+starts Codex; replace `codex` with `opencode` or `claude` to use another harness.
+For a private repository, authenticate Git in WSL before cloning; the harness
+login is separate from Git access.
 
 ```bash
-project=my-project
-repo_url='<repo-url>'
-sbx init "$project" &&
-git clone "$repo_url" "${CODEX_SANDBOX_WORKSPACES_ROOT:-$HOME/agent-workspaces}/$project/repo" &&
-sbx codex doctor "$project" &&
-sbx codex login "$project" &&
-sbx codex run "$project"
+sbx init my-project &&
+git clone '<repo-url>' \
+  "${CODEX_SANDBOX_WORKSPACES_ROOT:-$HOME/agent-workspaces}/my-project/repo" &&
+sbx codex login my-project &&
+sbx codex run my-project
 ```
 
-`init` creates the project folders, `doctor` checks the layout and image pins,
-and `login` starts the chosen harness's authentication flow. Each harness has
-its own login for the project. For a fresh repository, create a reviewed
-baseline commit on the host before starting an agent. Linked Git worktrees
-are not supported.
+`init` creates the project folders, and `login` starts the chosen harness's
+authentication flow. Each harness has its own login for the project. If a step
+fails, fix the error and resume at that step; initialization is needed only once.
+For a fresh repository, create a reviewed baseline commit on the host before
+starting an agent. Linked Git worktrees are not supported.
 
 ## Everyday use
 
-Use the same project name and harness you selected during setup:
+After this one-time setup, start each session with `run`. Use the same project
+name and harness you selected during setup:
 
 ```bash
 sbx codex run my-project
@@ -73,49 +76,53 @@ resource settings, and troubleshooting. `sbx --help` lists the command syntax;
 
 ## Updates
 
-Before `run`, the host checks the kit's tracked Git remote and each harness's
-published CLI release when its last check is at least 24 hours old. Notices
-allow the selected CLI to run and leave versions unchanged. Checks run
-concurrently with up to 15 seconds of network waiting; failed automatic checks
-stay silent and are cached for 24 hours. Explicit checks always retry.
-See [automatic-check controls](docs/OPERATOR-GUIDE.md#automatic-checks) to disable them.
+At startup, `run` checks for kit and harness updates if their last checks were
+at least 24 hours ago. An update notice lets your current version continue;
+it does not install anything. Exit the agent session before updating its project.
+Use the command named in the notice, supplying your project name.
 
 To update Codex and continue on one project:
 
 ```bash
-sbx codex-update --check &&
 sbx codex-update my-project &&
-sbx codex doctor my-project &&
 sbx codex run my-project
 ```
 
-Use `sbx opencode-update` or `sbx claude-update` for the other harnesses.
-Each update proposes an exact release, asks for confirmation, and builds and
-verifies its image before selecting it. Only that harness's image reference
+Use `sbx opencode-update my-project` or `sbx claude-update my-project` for the
+other harnesses, then run that harness. Each update proposes an exact release,
+asks for confirmation, and builds and verifies its image before selecting it.
+Only that harness's image reference
 in the named project changes. A failed build preserves the previous selection
 and project. Model access follows your account and the service's availability.
 
-To update the kit itself, use `sbx update --check`, then `sbx update my-project`.
+To update the kit itself and continue:
+
+```bash
+sbx update my-project &&
+sbx codex run my-project
+```
+
 This requires a clean kit checkout on a tracked branch. Review the printed
 commits and diff before confirming. The command fast-forwards the source,
 tests and installs the runtime, rebuilds changed image inputs, and applies
 the selected images to the named project.
 
-| Command | Effect |
-| --- | --- |
-| `sbx <agent>-update my-project` | Discovers and builds a CLI release; switches that harness in the project. |
-| `sbx update my-project` | Updates kit source, runtime, and changed images; switches all project image references. |
-| `sbx build` | Rebuilds the selected images. |
-| `sbx upgrade my-project` | Switches all project references to the current selections without building or downloading. |
+If an image build fails, resolve the error and rerun `sbx update my-project`;
+it resumes the unfinished builds before updating the project.
 
-Here `<agent>` means `codex`, `opencode`, or `claude`. If startup reports a stale
-project image, use the printed recovery command. New-release notices alone
-do not require `upgrade`. The [update guide](docs/OPERATOR-GUIDE.md#installation-and-updates)
-covers failed updates, saved selections, and reinstalling from a moved checkout.
+Both update commands apply the corresponding project changes; a separate
+`upgrade` is unnecessary in the normal update path. If startup reports a
+missing or stale image, follow its recovery command. See
+[failed updates](docs/OPERATOR-GUIDE.md#failed-updates) if a build fails.
+
+For troubleshooting without starting an agent, use `sbx codex doctor my-project`.
+To preview an update, use `sbx codex-update --check` or `sbx update --check`.
+These are optional. The [update guide](docs/OPERATOR-GUIDE.md#installation-and-updates)
+covers automatic-check controls, saved selections, and reinstalling from a moved checkout.
 
 ## Project files and context
 
-Projects default to `$HOME/agent-workspaces/<project>` in WSL. Set
+The example project lives at `$HOME/agent-workspaces/my-project` in WSL. Set
 `CODEX_SANDBOX_WORKSPACES_ROOT` to another WSL location before initializing a project.
 
 | Host folder | Container path | Agent access |
@@ -174,9 +181,9 @@ After building the pinned images, these smoke checks use disposable projects
 and require no real credentials or model requests:
 
 ```bash
-bash tests/smoke-codex.sh
-bash tests/smoke-opencode.sh
-bash tests/smoke-claude.sh
+bash tests/smoke-codex.sh &&
+bash tests/smoke-opencode.sh &&
+bash tests/smoke-claude.sh &&
 bash tests/smoke-toolchain.sh
 ```
 

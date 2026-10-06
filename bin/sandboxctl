@@ -19,6 +19,35 @@ require_command() {
   command -v "$1" >/dev/null 2>&1 || die "required command is missing: $1"
 }
 
+require_docker_daemon() {
+  require_command docker
+  local detail
+  if detail="$(docker info 2>&1 >/dev/null)"; then
+    return 0
+  fi
+  printf 'ERROR: Docker daemon is unavailable or inaccessible.\n' >&2
+  [[ -z "$detail" ]] || printf '%s\n' "$detail" >&2
+  printf 'Start Docker Desktop and enable WSL integration for this distribution, then retry.\n' >&2
+  return 1
+}
+
+ensure_image_available() {
+  require_command docker
+  docker image inspect "$1" >/dev/null 2>&1 && return 0
+  require_docker_daemon || return 1
+  image_missing "$1"
+}
+
+project_run_hint() {
+  local slug="$1" agent="${2:-all}"
+  if [[ "$agent" == all ]]; then
+    note "Next: sbx codex run $slug"
+    note 'Use opencode or claude in place of codex for those harnesses.'
+  else
+    note "Next: sbx $agent run $slug"
+  fi
+}
+
 validate_slug() {
   [[ "$1" =~ ^[a-z0-9][a-z0-9-]{0,62}$ ]] \
     || die "slug must be lowercase letters, numbers, and hyphens (maximum 63 characters)"
@@ -119,8 +148,7 @@ cmd_context() {
 }
 
 ensure_codex_images() {
-  docker image inspect "$PROJECT_NETWORK_IMAGE" >/dev/null 2>&1 \
-    || image_missing "$PROJECT_NETWORK_IMAGE"
+  ensure_image_available "$PROJECT_NETWORK_IMAGE" || return 1
 
   local network_kit network_mode network_codex
   local network_base network_package_integrity network_binary_integrity
@@ -167,8 +195,7 @@ check_image_label() {
 }
 
 ensure_opencode_image() {
-  docker image inspect "$PROJECT_OPENCODE_IMAGE" >/dev/null 2>&1 \
-    || image_missing "$PROJECT_OPENCODE_IMAGE"
+  ensure_image_available "$PROJECT_OPENCODE_IMAGE" || return 1
 
   local kit version package_integrity binary_integrity mode base
   kit="$(docker image inspect --format '{{index .Config.Labels "io.codex-sandbox.kit.version"}}' "$PROJECT_OPENCODE_IMAGE")"
@@ -852,6 +879,7 @@ record_update_check() {
 
 automatic_update_check() (
   automatic_update_check_due || return 0
+  local project="${1:-my-project}"
   local source local_sha tracked_sha remote_sha cache
   source="$(update_source_checkout)" || return 0
   load_update_tracking "$source" || return 0
@@ -869,8 +897,76 @@ automatic_update_check() (
   }
   record_update_check
   [[ "$local_sha" == "$tracked_sha" && "$remote_sha" != "$local_sha" ]] || return 0
-  printf 'UPDATE AVAILABLE: the tracked Agent Sandbox Kit source has remote changes.\nRun: sbx update --check\nThen: sbx update [<project>]\n' >&2
+  printf 'UPDATE AVAILABLE: the tracked Agent Sandbox Kit source has remote changes.\nExit the agent session before updating its project.\nRun: sbx update %s\nOptional preview: sbx update --check\n' "$project" >&2
 )
+
+installed_runtime_root() {
+  realpath -m -- "${XDG_DATA_HOME:-${HOME}/.local/share}/agent-sandbox-kit"
+}
+
+# Keep this flag beside the runtime so an atomic installation cannot erase it.
+# Its presence only requests rebuilding selected images; no values are executed.
+pending_image_build_file() {
+  printf '%s/.agent-sandbox-kit.image-build-pending' "${XDG_DATA_HOME:-${HOME}/.local/share}"
+}
+
+image_build_is_pending() {
+  local path
+  path="$(pending_image_build_file)"
+  [[ ! -L "$path" && ( ! -e "$path" || -f "$path" ) ]] \
+    || die "invalid pending image-build state: $path"
+  [[ -f "$path" ]]
+}
+
+mark_image_build_pending() (
+  local path temporary=''
+  path="$(pending_image_build_file)"
+  image_build_is_pending || true
+  mkdir -p -- "$(dirname "$path")"
+  temporary="$(mktemp "${path}.XXXXXX")"
+  trap '[[ -z "$temporary" ]] || rm -f -- "$temporary"' EXIT
+  printf 'pending\n' > "$temporary"
+  chmod 0600 "$temporary"
+  mv -f -- "$temporary" "$path"
+  temporary=''
+)
+
+clear_pending_image_build() {
+  local path
+  path="$(pending_image_build_file)"
+  image_build_is_pending || return 0
+  rm -- "$path"
+}
+
+complete_kit_update() {
+  local project="$1" rebuild="$2" status
+  local installed_sbx="${XDG_BIN_HOME:-${HOME}/.local/bin}/sbx"
+  if [[ "$rebuild" == true ]]; then
+    if "$installed_sbx" build; then
+      clear_pending_image_build
+    else
+      status=$?
+      printf 'ERROR: image build failed; source checkout and installed runtime are current, but image builds are incomplete.\nProject configuration has not been upgraded.\nAfter resolving the build error, retry: sbx update' >&2
+      [[ -z "$project" ]] || printf ' %q' "$project" >&2
+      printf '\n' >&2
+      return "$status"
+    fi
+  else
+    note 'Image inputs unchanged; skipping image rebuild.'
+  fi
+  if [[ -n "$project" ]]; then
+    if "$installed_sbx" upgrade "$project"; then
+      :
+    else
+      status=$?
+      printf 'ERROR: runtime installed, but the project configuration upgrade did not complete.\nAfter resolving the project error, retry: sbx update %q\n' "$project" >&2
+      return "$status"
+    fi
+  else
+    note 'Apply the selected images to an existing project: sbx upgrade my-project'
+  fi
+  record_update_check
+}
 
 cmd_update() {
   local check=false assume_yes=false auto=false project='' source local_sha remote_sha
@@ -895,12 +991,13 @@ cmd_update() {
   fi
 
   if [[ "$auto" == true ]]; then
-    [[ "$check" == false && "$assume_yes" == false && -z "$project" ]] \
-      || die 'usage: sbx update --auto-check'
-    automatic_update_check &
+    [[ "$check" == false && "$assume_yes" == false ]] \
+      || die 'usage: sbx update --auto-check [<project>]'
+    [[ -z "$project" ]] || validate_slug "$project"
+    automatic_update_check "$project" &
     local harness
     for harness in codex opencode claude; do
-      automatic_harness_update_check "$harness" &
+      automatic_harness_update_check "$harness" "$project" &
     done
     wait
     return
@@ -927,17 +1024,20 @@ cmd_update() {
     "$UPDATE_REMOTE_URL" "$local_sha" "$remote_sha"
 
   if [[ "$check" == true ]]; then
-    if [[ "$local_sha" == "$remote_sha" ]] && runtime_matches_source "$source"; then
+    if [[ "$local_sha" == "$remote_sha" ]] && runtime_matches_source "$source" && ! image_build_is_pending; then
       note 'Update available: no'
     else
       note 'Update available: yes'
-      note 'Run: sbx update [<project>]'
+      if image_build_is_pending; then note 'Update unfinished: image builds pending.'; fi
+      note 'Run: sbx update my-project'
+      note 'Replace my-project with the project name to update.'
     fi
     record_update_check
     return
   fi
 
-  acquire_runtime_update_lock "$KIT_ROOT"
+  mkdir -p -- "${XDG_DATA_HOME:-${HOME}/.local/share}"
+  acquire_runtime_update_lock "$(installed_runtime_root)"
   read_versions
   local_sha="$(git -C "$source" rev-parse HEAD)"
   [[ -z "$(git -C "$source" status --porcelain)" ]] \
@@ -946,6 +1046,12 @@ cmd_update() {
   git -C "$source" fetch --prune "$UPDATE_REMOTE"
   remote_sha="$(git -C "$source" rev-parse "$UPDATE_UPSTREAM")"
   if [[ "$local_sha" == "$remote_sha" ]] && runtime_matches_source "$source"; then
+    if image_build_is_pending; then
+      require_docker_daemon
+      note 'Kit source and runtime are current; resuming unfinished image builds.'
+      complete_kit_update "$project" true
+      return
+    fi
     note 'Agent Sandbox Kit is already current.'
     if [[ -n "$project" ]]; then
       cmd_upgrade "$project"
@@ -953,6 +1059,7 @@ cmd_update() {
     record_update_check
     return
   fi
+  if image_build_is_pending; then image_inputs_changed=true; fi
   git -C "$source" merge-base --is-ancestor "$local_sha" "$remote_sha" \
     || die 'source checkout cannot be fast-forwarded; resolve its branch state manually'
   printf 'Pending update:\n'
@@ -976,24 +1083,36 @@ cmd_update() {
     }
   fi
 
-  git -C "$source" merge --ff-only "$remote_sha"
-  bash "$source/tests/static.sh"
-  bash "$source/install.sh"
-
-  local installed_sbx
-  installed_sbx="${XDG_BIN_HOME:-${HOME}/.local/bin}/sbx"
   if [[ "$image_inputs_changed" == true ]]; then
-    "$installed_sbx" build
-  else
-    note 'Image inputs unchanged; skipping image rebuild.'
+    # Fail before advancing source or installing a runtime when Docker is off.
+    require_docker_daemon
+    mark_image_build_pending
   fi
-  if [[ -n "$project" ]]; then
-    "$installed_sbx" upgrade "$project"
-    note "Next: sbx codex doctor $project"
+  git -C "$source" merge --ff-only "$remote_sha"
+  # Test fixtures supply their own answers; checks must not consume user input.
+  local status
+  if bash "$source/tests/static.sh" </dev/null; then
+    :
   else
-    note 'Next: sbx upgrade <project>'
+    status=$?
+    printf 'ERROR: kit validation failed; source checkout advanced, but runtime and project configuration were not changed.\n' >&2
+    printf 'Review the failure in: %s\nAfter fixing it, run: bash %q && sbx update' "$source" "$source/tests/static.sh" >&2
+    [[ -z "$project" ]] || printf ' %q' "$project" >&2
+    printf '\n' >&2
+    return "$status"
   fi
-  record_update_check
+  if bash "$source/install.sh"; then
+    :
+  else
+    status=$?
+    printf 'ERROR: runtime installation failed; source checkout advanced and project configuration has not been upgraded.\n' >&2
+    printf 'After resolving the installation error, retry: sbx update' >&2
+    [[ -z "$project" ]] || printf ' %q' "$project" >&2
+    printf '\n' >&2
+    return "$status"
+  fi
+
+  complete_kit_update "$project" "$image_inputs_changed"
 }
 
 # Compare the installed snapshot too: the source may have been advanced manually
@@ -1075,17 +1194,12 @@ upgrade_project_config() (
     "$NETWORK_IMAGE" "$OPENCODE_IMAGE" "$CLAUDE_IMAGE"
   if ! project_images_are_stale; then
     note 'Project configuration is already current; no changes made.'
-    if [[ "$agent" == all ]]; then
-      note "Next: sbx <agent> doctor $slug"
-    else
-      note "Next: sbx $agent doctor $slug"
-    fi
+    project_run_hint "$slug" "$agent"
     return 0
   fi
   if [[ "$dry_run" == true ]]; then
     note 'Dry run: no files changed.'
-    note 'Next after applying: sbx build'
-    note "Then: sbx codex doctor $slug"
+    note "Apply: sbx upgrade $slug"
     return 0
   fi
 
@@ -1102,13 +1216,7 @@ upgrade_project_config() (
   fi
   note "Updated project configuration atomically. Backup: $backup"
   note 'Configuration upgrade complete; authentication volumes were not changed.'
-  if [[ "$agent" == all ]]; then
-    note 'Next: sbx build'
-    note "Then: sbx <agent> doctor $slug"
-  else
-    note "Next: sbx $agent doctor $slug"
-    note "Then: sbx $agent run $slug"
-  fi
+  project_run_hint "$slug" "$agent"
 )
 
 cmd_init() {
@@ -1184,9 +1292,15 @@ build_claude_image() {
 }
 
 cmd_build() {
+  mkdir -p -- "${XDG_DATA_HOME:-${HOME}/.local/share}"
+  acquire_runtime_update_lock "$(installed_runtime_root)"
+  read_versions
   build_codex_image
   build_opencode_image
   build_claude_image
+  if [[ "$(realpath -e "$KIT_ROOT")" == "$(installed_runtime_root)" ]]; then
+    clear_pending_image_build
+  fi
 }
 
 cmd_doctor() {
@@ -1194,7 +1308,7 @@ cmd_doctor() {
   [[ -n "$slug" ]] || die "usage: sbx codex doctor <slug>"
   require_command docker
   require_command git
-  docker info >/dev/null
+  require_docker_daemon
   load_project "$slug"
   ensure_project_layout
   ensure_codex_images
@@ -1403,7 +1517,7 @@ cmd_doctor_opencode() {
   [[ -n "$slug" ]] || die "usage: sbx opencode doctor <slug>"
   require_command docker
   require_command git
-  docker info >/dev/null
+  require_docker_daemon
   load_project "$slug"
   ensure_project_layout
   ensure_opencode_image
@@ -1419,8 +1533,7 @@ cmd_doctor_opencode() {
 }
 
 ensure_claude_images() {
-  docker image inspect "$PROJECT_CLAUDE_IMAGE" >/dev/null 2>&1 \
-    || image_missing "$PROJECT_CLAUDE_IMAGE"
+  ensure_image_available "$PROJECT_CLAUDE_IMAGE" || return 1
 
   local network_kit network_mode network_claude
   local network_base network_package_integrity network_binary_integrity
@@ -1603,7 +1716,7 @@ cmd_doctor_claude() {
   [[ -n "$slug" ]] || die "usage: sbx claude doctor <slug>"
   require_command docker
   require_command git
-  docker info >/dev/null
+  require_docker_daemon
   load_project "$slug"
   ensure_project_layout
   ensure_claude_images

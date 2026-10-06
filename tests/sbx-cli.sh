@@ -12,12 +12,14 @@ cp "$root/adapters/"*.sh "$work/kit/adapters/"
 cat > "$work/kit/bin/sandboxctl" <<'STUB'
 #!/usr/bin/env bash
 if [[ "${1:-}" == update && "${2:-}" == --auto-check ]]; then
+  printf '<%s>\n' "$@" > "$AUTO_CHECK_LOG"
   exit 0
 fi
 printf '<%s>\n' "$@"
 STUB
 chmod +x "$work/kit/bin/sbx" "$work/kit/bin/sandboxctl"
 sbx="$work/kit/bin/sbx"
+export AUTO_CHECK_LOG="$work/auto-check.log"
 
 assert_output() {
   local expected="$1"
@@ -45,6 +47,13 @@ for spec in \
 <probe>" "$agent" "$action" probe
 done
 printf 'PASS: all public agent/action routes forward canonical commands\n'
+assert_output '<codex>
+<run>
+<another-project>' codex run another-project
+[[ "$(cat "$AUTO_CHECK_LOG")" == '<update>
+<--auto-check>
+<another-project>' ]]
+printf 'PASS: launch update notices receive the current project name\n'
 
 assert_output '<codex>
 <exec>

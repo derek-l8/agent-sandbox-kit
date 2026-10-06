@@ -243,9 +243,17 @@ Changes to those inputs change its tag. Older images remain available.
 To reproduce a selection, keep its release lock, baseline `versions.lock`,
 Dockerfile, configuration, and container build inputs together.
 
-Runtime installation and version updates hold one host lock outside the
-replaceable runtime directory. Project reference changes additionally hold
+Runtime installation, selected-image builds, and version updates hold one host
+lock outside the replaceable runtime directory. Project reference changes additionally hold
 the shared session lock. Startup checks use separate per-check cache locks.
+
+Kit updates atomically record required image builds in
+`${XDG_DATA_HOME:-$HOME/.local/share}/.agent-sandbox-kit.image-build-pending`
+before advancing the source. This private flag survives runtime replacement;
+it contains no version or project configuration. Failed or interrupted builds
+retain it. A successful build of the installed runtime clears it under the
+same host lock. Retrying the kit update finishes pending builds before changing
+project references. Symbolic links and non-regular flag files are rejected.
 
 Kit update confirmation permits the fetched checkout's tests and installer
 to run with the WSL user's permissions, so inspect the printed source, commits,

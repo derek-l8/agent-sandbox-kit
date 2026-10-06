@@ -21,14 +21,17 @@ chmod +x "$work/bin/wslpath"
 export CONTEXT_TEST_ROOT="$work"
 export PATH="$work/bin:$PATH"
 printf '%s\r\n"%s/source/image.png"\r\n\r\n' '"C:\Users\Example\Plan with spaces.pdf"' "$work" \
-  | "$sbx" context probe > "$work/result"
+  | "$sbx" context probe > "$work/result" 2> "$work/import.err"
+grep -q 'Paste Copy as path values' "$work/import.err"
 grep -qx 'Imported: /context/Plan with spaces.pdf' "$work/result"
 cmp "$work/source/Plan with spaces.pdf" "$project/context/Plan with spaces.pdf"
 "$sbx" context probe list | grep -qx '/context/image.png'
 printf 'changed\n' > "$work/source/image.png"
-printf 'n\n' | "$sbx" context probe add "$work/source/image.png" >/dev/null
+printf 'n\n' | "$sbx" context probe add "$work/source/image.png" > "$work/decline.out" 2> "$work/decline.err"
+grep -Fq 'Replace imported copy image.png? [y/N]' "$work/decline.err"
 grep -qx image "$project/context/image.png"
-printf 'y\n' | "$sbx" context probe add "$work/source/image.png" >/dev/null
+printf 'y\n' | "$sbx" context probe add "$work/source/image.png" > "$work/replace.out" 2> "$work/replace.err"
+grep -Fq 'Replace imported copy image.png? [y/N]' "$work/replace.err"
 grep -qx changed "$project/context/image.png"
 # No shell expansion: a command substitution in a filename stays literal.
 literal='$(touch NOT_EXECUTED).txt'

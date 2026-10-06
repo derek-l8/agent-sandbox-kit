@@ -6,7 +6,7 @@
 acquire_runtime_update_lock() {
   local root="$1" lock_path
   command -v flock >/dev/null || { printf 'ERROR: required command is missing: flock\n' >&2; return 1; }
-  lock_path="$(cd "$(dirname "$root")" && pwd)/.${root##*/}.runtime.lock"
+  lock_path="$(cd "$(dirname "$root")" && pwd -P)/.${root##*/}.runtime.lock"
   if [[ "$(readlink /proc/self/fd/9 2>/dev/null || true)" != "$lock_path" ]]; then
     exec 9>"$lock_path"
   fi
@@ -54,6 +54,7 @@ resolve_harness_release() {
 
 automatic_harness_update_check() (
   harness_update_profile "$1"
+  local project="${2:-my-project}"
   local disable_key="SBX_DISABLE_${HARNESS_PREFIX}_UPDATE_CHECK"
   [[ "${SBX_DISABLE_UPDATE_CHECK:-0}" != 1 && "${SBX_DISABLE_HARNESS_UPDATE_CHECK:-0}" != 1 \
       && "${!disable_key:-0}" != 1 ]] || return 0
@@ -74,8 +75,8 @@ automatic_harness_update_check() (
   metadata="$(resolve_harness_release "$HARNESS_AGENT" 2>/dev/null)" || return 0
   candidate="$(sed -n "s/^${HARNESS_VERSION_KEY}=//p" <<< "$metadata")"
   python3 "$KIT_ROOT/bin/harness-release.py" newer "$candidate" "${!HARNESS_VERSION_KEY}" || return 0
-  printf '%s UPDATE AVAILABLE: published CLI %s (selected: %s).\nRun: sbx %s-update --check\nThen: sbx %s-update <project>\n' \
-    "$HARNESS_PREFIX" "$candidate" "${!HARNESS_VERSION_KEY}" "$HARNESS_AGENT" "$HARNESS_AGENT" >&2
+  printf '%s UPDATE AVAILABLE: published CLI %s (selected: %s).\nExit the agent session before updating its project.\nRun: sbx %s-update %s\nOptional preview: sbx %s-update --check\n' \
+    "$HARNESS_PREFIX" "$candidate" "${!HARNESS_VERSION_KEY}" "$HARNESS_AGENT" "$project" "$HARNESS_AGENT" >&2
 )
 
 cmd_harness_update() (

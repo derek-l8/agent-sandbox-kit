@@ -70,7 +70,7 @@ main() {
   [[ -n "$handler" ]] \
     || die "invalid action '$action' for agent '$agent' (expected: ${SBX_ADAPTER_ACTIONS[$agent]})"
   if [[ "$action" == run ]]; then
-    "$SBX_CTL" update --auto-check || true
+    "$SBX_CTL" update --auto-check "${3:-}" || true
   fi
   shift 2
   exec "$SBX_CTL" "$agent" "$action" "$@"
